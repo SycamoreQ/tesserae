@@ -1,0 +1,4 @@
+(executable
+ (public_name tesserae)
+ (name main)
+ (libraries tesserae))

@@ -1,0 +1,20 @@
+outer shape flat: 4, 2
+outer stride flat: 1, 4
+outer size: 8
+outer cosize: 8
+inner shape flat: 2, 2
+inner stride flat: 1, 2
+outer idx (0,0) = 0
+outer idx (1,0) = 1
+outer idx (0,1) = 4
+outer idx (1,1) = 5
+outer idx (2,0) = 2
+apply_outer(1) should be = 1
+apply_outer(2) should be = 4
+Composed Stride: 
+(1,
+ 4)
+Inner Cosize: 4, Outer Size: 8
+[33mASSERT[0m size
+[33mASSERT[0m idx (0,0)
+[33mASSERT[0m idx (1,1)

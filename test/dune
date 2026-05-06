@@ -1,0 +1,66 @@
+(test
+ (name test_mode)
+ (libraries tesserae alcotest))
+
+(test
+ (name test_layout)
+ (libraries tesserae alcotest))
+
+ (test
+  (name test_compose)
+  (libraries tesserae alcotest))
+
+
+(test
+  (name test_memspace)
+  (libraries tesserae alcotest))
+
+
+(test
+  (name test_tensor)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_algebra)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_elemtype)
+  (libraries tesserae alcotest))
+
+
+(test
+  (name test_divide)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_codegen)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_swizzle)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_mma_atom)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_copy_atom)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_tiled_mma)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_tiled_copy)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_predicate)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_tmem)
+  (libraries tesserae alcotest))
