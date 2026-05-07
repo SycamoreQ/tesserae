@@ -1,1 +1,0 @@
-lib/elemtype.mli: Stdlib
