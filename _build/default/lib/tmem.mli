@@ -105,3 +105,34 @@ val emit_shared_storage : t -> string -> string -> string
 
 (** [pp fmt t] pretty-prints the TMEM descriptor. *)
 val pp : Stdlib.Format.formatter -> t -> unit
+
+(** Double-buffered TMEM — two 128×256 tiles in 512 columns.
+    buf_id ∈ {0,1}, col offset = buf_id * 256. *)
+val buf_col_offset : int -> int
+
+(** [double_buf_make cta_group num_rows] creates a TMEM descriptor
+    sized for double buffering — always num_cols=512. *)
+val double_buf_make : cta_group:cta_group -> num_rows:int -> t
+
+(** [commit_multicast_ptx t mbar_var cta_mask] emits tcgen05.commit
+    with multicast for 2SM kernels.
+    cta_mask: 0b11 selects both CTAs in the cluster.
+    e.g. "tcgen05.commit.cta_group::2.mbarrier::arrive::one.multicast::cluster.shared::cluster.b64 [mbar], cta_mask;" *)
+val commit_multicast_ptx : t -> string -> int -> string
+
+(** [fence_after_thread_sync_ptx ()] emits:
+    "tcgen05.fence::after_thread_sync;" *)
+val fence_after_thread_sync_ptx : unit -> string
+
+(** [before_thread_sync_ptx ()] emits:
+    "tcgen05.fence::before_thread_sync;" *)
+val before_thread_sync_ptx : unit -> string
+
+(** [wait_ld_ptx ()] emits:
+    "tcgen05.wait::ld.sync.aligned;" *)
+val wait_ld_ptx : unit -> string
+
+(** [ld_batched_ptx t taddr_var dst_var_groups n_cols] emits
+    batched tcgen05.ld calls without intervening waits.
+    Each group in dst_var_groups is a list of 8 register names. *)
+val ld_batched_ptx : t -> string -> string list list -> int list -> string

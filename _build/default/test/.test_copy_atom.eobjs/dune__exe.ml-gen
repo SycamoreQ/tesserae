@@ -3,6 +3,9 @@
 (** @canonical Dune__exe.Test_algebra *)
 module Test_algebra = Dune__exe__Test_algebra
 
+(** @canonical Dune__exe.Test_cluster *)
+module Test_cluster = Dune__exe__Test_cluster
+
 (** @canonical Dune__exe.Test_codegen *)
 module Test_codegen = Dune__exe__Test_codegen
 

@@ -64,3 +64,7 @@
 (test
   (name test_tmem)
   (libraries tesserae alcotest))
+
+(test
+  (name test_cluster)
+  (libraries tesserae alcotest))

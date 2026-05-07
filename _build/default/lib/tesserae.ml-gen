@@ -3,6 +3,9 @@
 (** @canonical Tesserae.Algebra *)
 module Algebra = Tesserae__Algebra
 
+(** @canonical Tesserae.Cluster *)
+module Cluster = Tesserae__Cluster
+
 (** @canonical Tesserae.Codegen *)
 module Codegen = Tesserae__Codegen
 
