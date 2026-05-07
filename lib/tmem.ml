@@ -101,3 +101,32 @@ let pp (fmt : Stdlib.Format.formatter) (t : t) : unit =
     "Tmem(cta_group=%s rows=%d cols=%d elems=%d bytes=%d)"
     (cta_group_str t) t.num_rows t.num_cols
     (total_elems t) (bytes t)
+
+let buf_col_offset (buf_id : int) : int =
+  buf_id * 256
+
+let double_buf_make ~(cta_group : cta_group) ~(num_rows : int) : t =
+  make ~cta_group ~num_cols:512 ~num_rows
+
+let commit_multicast_ptx (t : t) (mbar_var : string) (cta_mask : int) : string =
+  Printf.sprintf
+    "tcgen05.commit.cta_group::%s.mbarrier::arrive::one.multicast::cluster.shared::cluster.b64 [%s], %d;"
+    (cta_group_str t) mbar_var cta_mask
+
+let fence_after_thread_sync_ptx () : string =
+  "tcgen05.fence::after_thread_sync;"
+
+let before_thread_sync_ptx () : string =
+  "tcgen05.fence::before_thread_sync;"
+
+let wait_ld_ptx () : string =
+  "tcgen05.wait::ld.sync.aligned;"
+
+let ld_batched_ptx
+    (t : t)
+    (taddr_var : string)
+    (dst_var_groups : string list list)
+    (n_cols : int list) : string =
+  List.map2_exn dst_var_groups n_cols ~f:(fun regs n_col ->
+    ld_ptx t taddr_var regs n_col)
+  |> String.concat ~sep:"\n"
