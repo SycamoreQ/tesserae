@@ -1,10 +1,10 @@
 open Base
 
 type ('arch, 'a, 'b, 'c, 'd) t = {
-  atom          : ('arch, 'a, 'b, 'c, 'd) Mma_atom.t;
+  atom  : ('arch, 'a, 'b, 'c, 'd) Mma_atom.t;
   thread_layout : Layout.t;
-  warp_layout   : Layout.t;
-  tiler_mn      : Modes.t;
+  warp_layout : Layout.t;
+  tiler_mn : Modes.t;
 }
 
 let make atom thread_layout warp_layout tiler_mn =

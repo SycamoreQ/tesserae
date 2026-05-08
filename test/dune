@@ -68,3 +68,19 @@
 (test
   (name test_cluster)
   (libraries tesserae alcotest))
+
+(test
+  (name test_pipeline)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_smem_desc)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_tile_io)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_tile_op)
+  (libraries tesserae alcotest))

@@ -12,12 +12,12 @@ type fragment =
   | Frag8_16b
 
 type t = {
-  cta_group     : cta_group;
-  layout        : layout_variant;
-  fragment      : fragment;
-  num_cols      : int;
-  num_rows      : int;
-  elem_type     : Elemtype.float32 Elemtype.t;
+  cta_group : cta_group;
+  layout : layout_variant;
+  fragment : fragment;
+  num_cols : int;
+  num_rows : int;
+  elem_type : Elemtype.float32 Elemtype.t;
 }
 
 let make ~(cta_group : cta_group) ~(num_cols : int) ~(num_rows : int) : t =

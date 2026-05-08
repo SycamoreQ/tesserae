@@ -10,8 +10,8 @@ type _ t =
   | Float32  : float32  t
   | Float16  : float16  t
   | Bfloat16 : bfloat16 t
-  | Int8     : int8     t
-  | Int32    : int32    t
+  | Int8 : int8     t
+  | Int32 : int32    t
 
 let cpp_name : type a. a t -> string = fun e ->
   match e with

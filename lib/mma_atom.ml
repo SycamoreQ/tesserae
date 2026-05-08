@@ -14,10 +14,10 @@ type major =
   | ColMajor
 
 type ('arch, 'a, 'b, 'c, 'd) t = {
-  arch    : 'arch arch;
-  m       : int;
-  n       : int;
-  k       : int;
+  arch : 'arch arch;
+  m : int;
+  n : int;
+  k : int;
   a_type  : 'a Elemtype.t;
   b_type  : 'b Elemtype.t;
   c_type  : 'c Elemtype.t;
@@ -112,7 +112,6 @@ let sm100_64x64x32_s32s8s8s32 a_major b_major =
   ; d_type = Elemtype.Int32
   ; a_major; b_major }
 
-(* --- queries --- *)
 
 let shape a = (a.m, a.n, a.k)
 
@@ -127,8 +126,6 @@ let is_wgmma : type arch a b c d. (arch, a, b, c, d) t -> bool =
   | SM80  -> false
   | SM90  -> true
   | SM100 -> true
-
-(* --- codegen --- *)
 
 let arch_string : type arch a b c d. (arch, a, b, c, d) t -> string =
   fun a -> match a.arch with

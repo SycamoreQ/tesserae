@@ -3,4 +3,4 @@
  (libraries base)
  (modules modes layout compose memspace tensor algebra elemtype
   codegen swizzle mma_atom copy_atom tiled_mma tiled_copy predicate tmem
-  cluster))
+  cluster pipeline smem_desc tile_io tile_op))

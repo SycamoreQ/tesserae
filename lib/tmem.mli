@@ -136,3 +136,5 @@ val wait_ld_ptx : unit -> string
     batched tcgen05.ld calls without intervening waits.
     Each group in dst_var_groups is a list of 8 register names. *)
 val ld_batched_ptx : t -> string -> string list list -> int list -> string
+
+val cta_group_str: t -> string

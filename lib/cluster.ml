@@ -62,14 +62,14 @@ let consumer_warp (t : t) : int option =
   | None -> None
 
 let epilogue_warps (t : t) : int list =
-  match List.find t.warp_roles ~f:(fun (_id, role) ->
-    match role with Epilogue -> true | _ -> false) with
-  | Some (id, _) -> [id]
-  | None -> []
+  List.filter_map t.warp_roles ~f:(fun (id, role) ->
+    match role with
+    | Epilogue -> Some id
+    | _ -> None)
 
 let scheduler_warp (t : t) : int option =
   match List.find t.warp_roles ~f:(fun (_id, role) ->
-    match role with Epilogue -> true | _ -> false) with
+    match role with Scheduler -> true | _ -> false) with
   | Some (id, _) -> Some id
   | None -> None
 
@@ -77,27 +77,25 @@ let thread_count (t : t) : int =
   t.num_warps * 32
 
 let cluster_arrive_ptx () : string =
-  "barrier.cluster.wait.acquire.aligned;"
+  "barrier.cluster.arrive.release.aligned;"
 
 let cluster_wait_ptx () : string =
   "barrier.cluster.wait.acquire.aligned;"
 
 let cluster_ctaid_ptx (reg : string) : string =
-  Printf.sprintf "  mov.u32 %s, %%cluster_ctaid.x;" reg
+  Printf.sprintf "mov.u32 %s, %%cluster_ctaid.x;" reg
 
 let mapa_ptx (dst : string) (src : string) (cta_rank : string) : string =
-  Printf.sprintf "  mapa.u32 %s, %s, %s;" dst src cta_rank
+  Printf.sprintf "mapa.shared::cluster.u32 %s, %s, %s;" dst src cta_rank
 
 let mbarrier_arrive_expect_cluster_ptx (mbar_var : string) (expect_bytes : int) : string =
-  Printf.sprintf "  mbarrier.arrive.expect_tx.cluster.shared.b64 _, [%s], %d;" mbar_var expect_bytes
+  Printf.sprintf "mbarrier.arrive.expect_tx.shared::cluster.b64 [%s], %d;" mbar_var expect_bytes
 
 let emit_cluster_attr (t : t) : string =
-  Printf.sprintf ".section .nv.info.\"\",@progbits\n\
-                  .align 4\n\
-                  .cluster_dims %d, %d, %d;" t.dims.x t.dims.y t.dims.z
+  Printf.sprintf "__cluster_dims__(%d, %d, %d)" t.dims.x t.dims.y t.dims.z
 
 let emit_smem_mbar (var_name : string) (count : int) : string =
-  Printf.sprintf ".shared .align 8 .b64 %s[%d];" var_name count
+  Printf.sprintf "__shared__ __align__(8) uint64_t %s[%d];" var_name count
 
 let pp (fmt : Stdlib.Format.formatter) (t : t) : unit =
   let open Stdlib.Format in

@@ -15,7 +15,7 @@ let compose (outer : Layout.t) (inner : Layout.t) : Layout.t =
   in
   let rec new_stride (m : Modes.t) : Modes.t =
     match m with
-    | Modes.Int s      -> Modes.Int (apply_outer s)
+    | Modes.Int s -> Modes.Int (apply_outer s)
     | Modes.Tuple elts -> Modes.Tuple (List.map elts ~f:new_stride)
   in
   { Layout.shape = inner.shape; stride = new_stride inner.stride }
