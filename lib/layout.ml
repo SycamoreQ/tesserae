@@ -1,7 +1,7 @@
 open Base
 
 type t = {
-  shape  : Modes.t;
+  shape : Modes.t;
   stride : Modes.t;
 }
 
