@@ -30,10 +30,6 @@ let cp_async () =
   Tile_io.make Tile_io.CpAsync Elemtype.Float16
     (cluster_1sm ()) (pipe ()) (sw128 ()) 128 256 64
 
-(* ------------------------------------------------------------------ *)
-(* make / is_tma / requires_mbar                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_is_tma_true () =
   Alcotest.(check bool) "tma" true (Tile_io.is_tma (tma_2sm ()))
 
@@ -45,10 +41,6 @@ let test_requires_mbar_tma () =
 
 let test_requires_mbar_cp () =
   Alcotest.(check bool) "cp mbar" false (Tile_io.requires_mbar (cp_async ()))
-
-(* ------------------------------------------------------------------ *)
-(* bytes_per_load                                                      *)
-(* ------------------------------------------------------------------ *)
 
 let test_bytes_a_tma () =
   (* BM=128, BK=64, bf16: 128*64*2 = 16384 bytes *)
@@ -64,10 +56,6 @@ let test_bytes_b_tma_1sm () =
   (* BN=256, BK=64, bf16, 1SM → full B: 256*64*2 = 32768 *)
   Alcotest.(check int) "b bytes 1sm" 32768
     (Tile_io.bytes_per_load_b (tma_1sm ()) 256 64 Tmem.CTA1)
-
-(* ------------------------------------------------------------------ *)
-(* emit_mbar_expect                                                    *)
-(* ------------------------------------------------------------------ *)
 
 let test_mbar_expect_2sm () =
   (* 2SM: A + B/2 = (128+128)*64*2 = 32768 bytes *)
@@ -96,10 +84,6 @@ let test_mbar_expect_1sm () =
   in
   Alcotest.(check bool) "has 49152" true (contains "49152" s)
 
-(* ------------------------------------------------------------------ *)
-(* emit_tma_load                                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_emit_tma_load_a () =
   let t = tma_2sm () in
   let s = Tile_io.emit_tma_load_a t "A_smem" "A_tmap" "mbar" "row" "col" "k" in
@@ -124,10 +108,6 @@ let test_emit_cp_async () =
     done; !found
   in
   Alcotest.(check bool) "has cp.async" true (contains "cp.async" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Tile_io" [

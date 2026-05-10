@@ -3,10 +3,10 @@ open Tesserae
 let i n    = Modes.Int n
 let lay s d = Layout.make s d
 
-(* Standard Ampere gmem->smem async copy:
-   atom     = SM80_CP_ASYNC_CACHEGLOBAL float32 (16 bytes, 4 elems)
+(* Standard Ampere gmem to smem async copy:
+   atom  = SM80_CP_ASYNC_CACHEGLOBAL float32 (16 bytes, 4 elems)
    threads  = 32 flat
-   vals     = 4 elements per thread (one 128-bit vector load) *)
+   vals = 4 elements per thread (one 128-bit vector load) *)
 let ampere_gmem_smem () =
   Tiled_copy.make
     (Copy_atom.sm80_cp_async_global Elemtype.Float32)
@@ -14,9 +14,9 @@ let ampere_gmem_smem () =
     (lay (i 4)  (i 1))
 
 (* Ampere float16 async copy:
-   atom     = SM80_CP_ASYNC_CACHEGLOBAL float16 (16 bytes, 8 elems)
-   threads  = 32 flat
-   vals     = 8 elements per thread *)
+   atom = SM80_CP_ASYNC_CACHEGLOBAL float16 (16 bytes, 8 elems)
+   threads = 32 flat
+   vals = 8 elements per thread *)
 let ampere_f16_copy () =
   Tiled_copy.make
     (Copy_atom.sm80_cp_async_global Elemtype.Float16)
@@ -24,9 +24,9 @@ let ampere_f16_copy () =
     (lay (i 8)  (i 1))
 
 (* Hopper TMA load:
-   atom     = SM90_TMA_LOAD float16 (128 bytes, 64 elems)
-   threads  = 128 (warpgroup, but TMA only uses 1 thread)
-   vals     = 64 elements per "thread" (TMA bulk) *)
+   atom = SM90_TMA_LOAD float16 (128 bytes, 64 elems)
+   threads = 128 (warpgroup, but TMA only uses 1 thread)
+   vals = 64 elements per "thread" (TMA bulk) *)
 let hopper_tma () =
   Tiled_copy.make
     (Copy_atom.sm90_tma_load Elemtype.Float16)
@@ -40,10 +40,6 @@ let universal_copy () =
     (lay (i 32) (i 1))
     (lay (i 1)  (i 1))
 
-(* ------------------------------------------------------------------ *)
-(* make / validation                                                   *)
-(* ------------------------------------------------------------------ *)
-
 let test_make_valid () =
   let t = ampere_gmem_smem () in
   Alcotest.(check int) "threads" 32 (Tiled_copy.thread_count t)
@@ -55,11 +51,7 @@ let test_make_invalid_val () =
        ignore (Tiled_copy.make
          (Copy_atom.sm80_cp_async_global Elemtype.Float32)
          (lay (i 32) (i 1))
-         (lay (i 2) (i 1))))   (* wrong: 2 instead of 4 *)
-
-(* ------------------------------------------------------------------ *)
-(* thread_count / elements_per_thread / tile_size                     *)
-(* ------------------------------------------------------------------ *)
+         (lay (i 2) (i 1))))
 
 let test_thread_count () =
   Alcotest.(check int) "32" 32
@@ -83,10 +75,6 @@ let test_tile_size_f16 () =
   Alcotest.(check int) "256" 256
     (Tiled_copy.tile_size (ampere_f16_copy ()))
 
-(* ------------------------------------------------------------------ *)
-(* is_tma / requires_mbar                                             *)
-(* ------------------------------------------------------------------ *)
-
 let test_is_tma_false () =
   Alcotest.(check bool) "cp.async not tma" false
     (Tiled_copy.is_tma (ampere_gmem_smem ()))
@@ -103,10 +91,6 @@ let test_requires_mbar_true () =
   Alcotest.(check bool) "tma needs mbar" true
     (Tiled_copy.requires_mbar (hopper_tma ()))
 
-(* ------------------------------------------------------------------ *)
-(* partition_src / partition_dst                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_partition_src_size () =
   (* universal copy, 32 threads over a 128-element layout
      each thread gets 128/32 = 4 elements *)
@@ -120,10 +104,6 @@ let test_partition_dst_size () =
   let l  = lay (i 128) (i 1) in
   let p  = Tiled_copy.partition_dst t l in
   Alcotest.(check int) "per-thread 4" 4 (Layout.size p)
-
-(* ------------------------------------------------------------------ *)
-(* emit_cpp                                                            *)
-(* ------------------------------------------------------------------ *)
 
 let test_emit_cp_async () =
   let t = ampere_gmem_smem () in
@@ -150,10 +130,6 @@ let test_emit_tma () =
     done; !found
   in
   Alcotest.(check bool) "has TMA_LOAD" true (contains "TMA_LOAD" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Tiled_copy" [

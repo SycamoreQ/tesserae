@@ -1,9 +1,5 @@
 open Tesserae
 
-(* ------------------------------------------------------------------ *)
-(* make / validation                                                   *)
-(* ------------------------------------------------------------------ *)
-
 let test_make_valid () =
   let sw = Swizzle.make 2 4 3 in
   Alcotest.(check int) "b" 2 sw.Swizzle.b;
@@ -14,10 +10,6 @@ let test_make_invalid () =
   Alcotest.check_raises "negative b"
     (Invalid_argument "swizzle parameters must be non-negative")
     (fun () -> ignore (Swizzle.make (-1) 4 3))
-
-(* ------------------------------------------------------------------ *)
-(* apply                                                               *)
-(* ------------------------------------------------------------------ *)
 
 let test_apply_identity () =
   (* Swizzle<0,4,3>: yyy_msk = 0, always identity *)
@@ -64,10 +56,6 @@ let test_apply_b3 () =
   Alcotest.(check int) "0"         0   (Swizzle.apply sw 0);
   Alcotest.(check int) "1023->911" 911 (Swizzle.apply sw 1023)
 
-(* ------------------------------------------------------------------ *)
-(* self-inverse                                                        *)
-(* ------------------------------------------------------------------ *)
-
 let test_self_inverse_b1 () =
   let sw = Swizzle.make 1 4 3 in
   for x = 0 to 255 do
@@ -86,10 +74,6 @@ let test_self_inverse_b3 () =
       Alcotest.failf "not self-inverse at x=%d: got %d" x z
   done
 
-(* ------------------------------------------------------------------ *)
-(* is_identity                                                         *)
-(* ------------------------------------------------------------------ *)
-
 let test_is_identity_true () =
   Alcotest.(check bool) "b=0" true
     (Swizzle.is_identity (Swizzle.make 0 4 3))
@@ -98,19 +82,11 @@ let test_is_identity_false () =
   Alcotest.(check bool) "b=2" false
     (Swizzle.is_identity (Swizzle.make 2 4 3))
 
-(* ------------------------------------------------------------------ *)
-(* mask_bits                                                           *)
-(* ------------------------------------------------------------------ *)
-
 let test_mask_bits () =
   Alcotest.(check int) "b=2 -> 4" 4
     (Swizzle.mask_bits (Swizzle.make 2 4 3));
   Alcotest.(check int) "b=3 -> 8" 8
     (Swizzle.mask_bits (Swizzle.make 3 4 3))
-
-(* ------------------------------------------------------------------ *)
-(* compose                                                             *)
-(* ------------------------------------------------------------------ *)
 
 let test_compose_valid () =
   let sw1 = Swizzle.make 1 4 3 in
@@ -126,10 +102,6 @@ let test_compose_invalid () =
   Alcotest.check_raises "incompatible"
     (Invalid_argument "incompatible swizzle shifts for composition")
     (fun () -> ignore (Swizzle.compose sw1 sw2))
-
-(* ------------------------------------------------------------------ *)
-(* smem_selector                                                       *)
-(* ------------------------------------------------------------------ *)
 
 let test_smem_selector_f16_128 () =
   (* float16, 128B tile: tile_k*2=128 → B=3, M=4, S=3 *)
@@ -157,10 +129,6 @@ let test_smem_selector_identity () =
   let sw = Swizzle.smem_selector Elemtype.Float32 4 1 in
   Alcotest.(check bool) "identity" true (Swizzle.is_identity sw)
 
-(* ------------------------------------------------------------------ *)
-(* pp / emit_cpp                                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_pp () =
   let sw = Swizzle.make 2 4 3 in
   let s  = Stdlib.Format.asprintf "%a" Swizzle.pp sw in
@@ -175,10 +143,6 @@ let test_emit_cpp_128b () =
   let sw = Swizzle.make 3 4 3 in
   Alcotest.(check string) "128B" "Swizzle<3,4,3>"
     (Swizzle.emit_cpp sw)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Swizzle" [

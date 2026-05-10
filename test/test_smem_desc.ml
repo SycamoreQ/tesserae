@@ -1,9 +1,5 @@
 open Tesserae
 
-(* ------------------------------------------------------------------ *)
-(* swizzle_mode_of                                                     *)
-(* ------------------------------------------------------------------ *)
-
 let test_sw_none () =
   let sw = Swizzle.make 0 4 3 in
   Alcotest.(check bool) "no swizzle" true
@@ -24,10 +20,6 @@ let test_sw_128b () =
   Alcotest.(check bool) "128B" true
     (Smem_desc.swizzle_mode_of sw = Smem_desc.Swizzle128B)
 
-(* ------------------------------------------------------------------ *)
-(* swizzle_mode_bits                                                   *)
-(* ------------------------------------------------------------------ *)
-
 let test_bits_none () =
   Alcotest.(check int) "none=0" 0
     (Smem_desc.swizzle_mode_bits Smem_desc.NoSwizzle)
@@ -43,10 +35,6 @@ let test_bits_64b () =
 let test_bits_128b () =
   Alcotest.(check int) "128b=3" 3
     (Smem_desc.swizzle_mode_bits Smem_desc.Swizzle128B)
-
-(* ------------------------------------------------------------------ *)
-(* encode                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let test_encode_zero () =
   let d = Smem_desc.make
@@ -77,10 +65,6 @@ let test_encode_swizzle128 () =
     (3 lsl 61)
     (Smem_desc.encode d)
 
-(* ------------------------------------------------------------------ *)
-(* emit                                                                *)
-(* ------------------------------------------------------------------ *)
-
 let test_emit_make_smem_desc () =
   let s = Smem_desc.emit_make_smem_desc "A_smem" 128 16 Smem_desc.Swizzle128B in
   let contains sub str =
@@ -104,10 +88,6 @@ let test_emit_cpp_helper () =
   in
   Alcotest.(check bool) "has uint64_t" true (contains "uint64_t" s);
   Alcotest.(check bool) "has make_smem_desc" true (contains "make_smem_desc" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Smem_desc" [

@@ -22,10 +22,6 @@ let single_sm () =
     ; (2, Cluster.Epilogue)
     ; (3, Cluster.Epilogue) ]
 
-(* ------------------------------------------------------------------ *)
-(* make / validation                                                   *)
-(* ------------------------------------------------------------------ *)
-
 let test_make_valid () =
   let t = two_sm () in
   Alcotest.(check int) "warps" 6 t.Cluster.num_warps
@@ -63,10 +59,6 @@ let test_is_2sm_true () =
 let test_is_2sm_false () =
   Alcotest.(check bool) "1sm" false (Cluster.is_2sm (single_sm ()))
 
-(* ------------------------------------------------------------------ *)
-(* warp roles                                                          *)
-(* ------------------------------------------------------------------ *)
-
 let test_producer_warp () =
   Alcotest.(check (option int)) "producer" (Some 0)
     (Cluster.producer_warp (two_sm ()))
@@ -87,19 +79,11 @@ let test_scheduler_none () =
   Alcotest.(check (option int)) "no scheduler" None
     (Cluster.scheduler_warp (single_sm ()))
 
-(* ------------------------------------------------------------------ *)
-(* thread_count                                                        *)
-(* ------------------------------------------------------------------ *)
-
 let test_thread_count_2sm () =
   Alcotest.(check int) "192" 192 (Cluster.thread_count (two_sm ()))
 
 let test_thread_count_1sm () =
   Alcotest.(check int) "128" 128 (Cluster.thread_count (single_sm ()))
-
-(* ------------------------------------------------------------------ *)
-(* PTX emission                                                        *)
-(* ------------------------------------------------------------------ *)
 
 let test_cluster_arrive () =
   Alcotest.(check string) "arrive"
@@ -135,10 +119,6 @@ let test_emit_smem_mbar () =
   Alcotest.(check string) "smem mbar"
     "__shared__ __align__(8) uint64_t full_mbar[4];"
     (Cluster.emit_smem_mbar "full_mbar" 4)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Cluster" [

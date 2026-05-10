@@ -41,12 +41,12 @@ let test_cosize_simple () =
     (Layout.cosize (layout (int 4) (int 1)))
 
 let test_cosize_col_major () =
-  (* shape=(2,3) stride=(1,2) → (2-1)*1 + (3-1)*2 + 1 = 1 + 4 + 1 = 6 *)
+  (* shape=(2,3) stride=(1,2) -> (2-1)*1 + (3-1)*2 + 1 = 1 + 4 + 1 = 6 *)
   Alcotest.(check int) "cosize 6" 6
     (Layout.cosize (layout (tup [int 2; int 3]) (tup [int 1; int 2])))
 
 let test_cosize_noncontiguous () =
-  (* shape=(2,3) stride=(1,4) → (2-1)*1 + (3-1)*4 + 1 = 1 + 8 + 1 = 10 *)
+  (* shape=(2,3) stride=(1,4) -> (2-1)*1 + (3-1)*4 + 1 = 1 + 8 + 1 = 10 *)
   Alcotest.(check int) "cosize 10" 10
     (Layout.cosize (layout (tup [int 2; int 3]) (tup [int 1; int 4])))
 

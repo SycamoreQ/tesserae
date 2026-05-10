@@ -1,9 +1,5 @@
 open Tesserae
 
-(* ------------------------------------------------------------------ *)
-(* bulk_bytes                                                          *)
-(* ------------------------------------------------------------------ *)
-
 let test_bulk_bytes_f32 () =
   (* cp.async always transfers 16 bytes = 128 bits *)
   let a = Copy_atom.sm80_cp_async_global Elemtype.Float32 in
@@ -17,10 +13,6 @@ let test_bulk_bytes_tma () =
   (* TMA always transfers 128 bytes *)
   let a = Copy_atom.sm90_tma_load Elemtype.Float16 in
   Alcotest.(check int) "128 bytes" 128 (Copy_atom.bulk_bytes_of a)
-
-(* ------------------------------------------------------------------ *)
-(* vec_width                                                           *)
-(* ------------------------------------------------------------------ *)
 
 let test_vec_width_f32_async () =
   (* 16 bytes / 4 bytes per float = 4 elements *)
@@ -36,10 +28,6 @@ let test_vec_width_ldmatrix () =
   (* ldmatrix always loads 8 elements *)
   let a = Copy_atom.sm80_ldmatrix Elemtype.Float16 in
   Alcotest.(check int) "8 elems" 8 a.Copy_atom.vec_width
-
-(* ------------------------------------------------------------------ *)
-(* is_async                                                            *)
-(* ------------------------------------------------------------------ *)
 
 let test_is_async_cp () =
   let a = Copy_atom.sm80_cp_async_global Elemtype.Float32 in
@@ -62,9 +50,6 @@ let test_is_async_universal () =
   Alcotest.(check bool) "universal not async" false
     (Copy_atom.is_async a)
 
-(* ------------------------------------------------------------------ *)
-(* is_tma                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let test_is_tma_load () =
   let a = Copy_atom.sm90_tma_load Elemtype.Float16 in
@@ -82,10 +67,6 @@ let test_is_tma_false () =
   let a = Copy_atom.sm80_cp_async_global Elemtype.Float32 in
   Alcotest.(check bool) "cp.async not tma" false (Copy_atom.is_tma a)
 
-(* ------------------------------------------------------------------ *)
-(* requires_mbar                                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_mbar_tma () =
   let a = Copy_atom.sm90_tma_load Elemtype.Float32 in
   Alcotest.(check bool) "tma needs mbar" true
@@ -101,10 +82,6 @@ let test_mbar_universal () =
     Memspace.Global Memspace.Shared Elemtype.Float32 in
   Alcotest.(check bool) "universal no mbar" false
     (Copy_atom.requires_mbar a)
-
-(* ------------------------------------------------------------------ *)
-(* emit_cpp                                                            *)
-(* ------------------------------------------------------------------ *)
 
 let test_emit_cp_async_global_f32 () =
   let a = Copy_atom.sm80_cp_async_global Elemtype.Float32 in
@@ -155,18 +132,10 @@ let test_emit_universal () =
     "UniversalCopy<float>"
     (Copy_atom.emit_cpp a)
 
-(* ------------------------------------------------------------------ *)
-(* pp                                                                  *)
-(* ------------------------------------------------------------------ *)
-
 let test_pp () =
   let a = Copy_atom.sm90_tma_load Elemtype.Float16 in
   let s = Stdlib.Format.asprintf "%a" Copy_atom.pp a in
   Alcotest.(check string) "pp tma" "SM90_TMA_LOAD" s
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Copy_atom" [

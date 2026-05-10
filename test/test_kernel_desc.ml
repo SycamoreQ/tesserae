@@ -1,9 +1,5 @@
 open Tesserae
 
-(* ------------------------------------------------------------------ *)
-(* constructors                                                        *)
-(* ------------------------------------------------------------------ *)
-
 let ampere () =
   Kernel_desc.make_ampere
     ~name:"gemm_ampere"
@@ -25,10 +21,6 @@ let blackwell () =
     ~elem:Elemtype.Bfloat16
     ~m:8192 ~n:8192 ~k:8192
 
-(* ------------------------------------------------------------------ *)
-(* family                                                              *)
-(* ------------------------------------------------------------------ *)
-
 let test_family_ampere () =
   Alcotest.(check bool) "ampere" true
     (match (ampere ()).Kernel_desc.family with
@@ -44,10 +36,6 @@ let test_family_blackwell () =
     (match (blackwell ()).Kernel_desc.family with
      | Kernel_desc.Blackwell -> true | _ -> false)
 
-(* ------------------------------------------------------------------ *)
-(* dimensions                                                          *)
-(* ------------------------------------------------------------------ *)
-
 let test_dims_ampere () =
   let k = ampere () in
   Alcotest.(check int) "bm" 128 k.Kernel_desc.bm;
@@ -59,10 +47,6 @@ let test_dims_blackwell () =
   Alcotest.(check int) "bm" 128 k.Kernel_desc.bm;
   Alcotest.(check int) "bn" 256 k.Kernel_desc.bn;
   Alcotest.(check int) "bk" 64  k.Kernel_desc.bk
-
-(* ------------------------------------------------------------------ *)
-(* validate                                                            *)
-(* ------------------------------------------------------------------ *)
 
 let test_validate_ampere () =
   Alcotest.(check bool) "valid" true
@@ -76,10 +60,6 @@ let test_validate_blackwell () =
   Alcotest.(check bool) "valid" true
     (Result.is_ok (Kernel_desc.validate (blackwell ())))
 
-(* ------------------------------------------------------------------ *)
-(* arithmetic_intensity                                                *)
-(* ------------------------------------------------------------------ *)
-
 let test_ai_ampere () =
   (* 2*128*128*32 / ((128+128)*32*2) = 1048576 / 16384 = 64.0 *)
   let ai = Kernel_desc.arithmetic_intensity (ampere ()) in
@@ -91,10 +71,6 @@ let test_ai_blackwell_higher () =
   let ai_h = Kernel_desc.arithmetic_intensity (hopper ()) in
   Alcotest.(check bool) "blackwell > hopper AI" true (ai_b > ai_h)
 
-(* ------------------------------------------------------------------ *)
-(* smem_bytes                                                          *)
-(* ------------------------------------------------------------------ *)
-
 let test_smem_ampere () =
   (* pipeline_depth * (BM + BN) * BK * 2 bytes *)
   let s = Kernel_desc.smem_bytes (ampere ()) in
@@ -105,10 +81,6 @@ let test_smem_fits () =
   let s = Kernel_desc.smem_bytes (blackwell ()) in
   Alcotest.(check bool) "fits 227KB" true (s <= 227 * 1024)
 
-(* ------------------------------------------------------------------ *)
-(* num_warps                                                           *)
-(* ------------------------------------------------------------------ *)
-
 let test_num_warps_ampere () =
   (* 1 warp for mma.sync *)
   Alcotest.(check bool) "warps > 0" true
@@ -118,10 +90,6 @@ let test_num_warps_blackwell () =
   (* 6 warps: producer + consumer + 3 epilogue + scheduler *)
   Alcotest.(check int) "6 warps" 6
     (Kernel_desc.num_warps (blackwell ()))
-
-(* ------------------------------------------------------------------ *)
-(* emit_kernel_params                                                  *)
-(* ------------------------------------------------------------------ *)
 
 let test_emit_params_ampere () =
   let s = Kernel_desc.emit_kernel_params (ampere ()) in
@@ -148,10 +116,6 @@ let test_emit_params_tma () =
   in
   Alcotest.(check bool) "has tmap" true (contains "tmap" s)
 
-(* ------------------------------------------------------------------ *)
-(* emit_launch_config                                                  *)
-(* ------------------------------------------------------------------ *)
-
 let test_launch_ampere () =
   let s = Kernel_desc.emit_launch_config (ampere ()) 4096 4096 in
   let contains sub str =
@@ -173,10 +137,6 @@ let test_launch_blackwell () =
     done; !found
   in
   Alcotest.(check bool) "has cluster" true (contains "cluster" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Kernel_desc" [

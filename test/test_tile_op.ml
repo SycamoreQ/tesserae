@@ -36,10 +36,6 @@ let sm100_double () =
   let tmem = Tmem.double_buf_make ~cta_group:Tmem.CTA2 ~num_rows:128 in
   Tile_op.make tmma Tile_op.TensorMem ~tmem ~double_buf:true ()
 
-(* ------------------------------------------------------------------ *)
-(* flags                                                               *)
-(* ------------------------------------------------------------------ *)
-
 let test_is_tmem_false () =
   Alcotest.(check bool) "sm80 not tmem" false (Tile_op.is_tmem (sm80_op ()))
 
@@ -58,10 +54,6 @@ let test_double_buf_false () =
 let test_double_buf_true () =
   Alcotest.(check bool) "double" true (sm100_double ()).Tile_op.double_buf
 
-(* ------------------------------------------------------------------ *)
-(* accum_elems_per_thread                                              *)
-(* ------------------------------------------------------------------ *)
-
 let test_accum_sm80 () =
   (* 16*8 / 32 threads = 4 *)
   Alcotest.(check int) "sm80 4" 4
@@ -71,10 +63,6 @@ let test_accum_sm100 () =
   (* 64*64 / 128 threads = 32 *)
   Alcotest.(check int) "sm100 32" 32
     (Tile_op.accum_elems_per_thread (sm100_op ()))
-
-(* ------------------------------------------------------------------ *)
-(* emit_accum_decl                                                     *)
-(* ------------------------------------------------------------------ *)
 
 let test_accum_decl_registers () =
   let s = Tile_op.emit_accum_decl (sm80_op ()) "acc" in
@@ -92,10 +80,6 @@ let test_accum_decl_tmem () =
   (* TMEM: no register declaration needed *)
   let s = Tile_op.emit_accum_decl (sm100_op ()) "acc" in
   Alcotest.(check string) "empty" "" s
-
-(* ------------------------------------------------------------------ *)
-(* emit_mma                                                            *)
-(* ------------------------------------------------------------------ *)
 
 let test_emit_mma_sm80 () =
   let s = Tile_op.emit_mma (sm80_op ()) "a_desc" "b_desc" false in
@@ -119,10 +103,6 @@ let test_emit_mma_sm100 () =
   in
   Alcotest.(check bool) "has tcgen05" true (contains "tcgen05" s)
 
-(* ------------------------------------------------------------------ *)
-(* emit_commit                                                         *)
-(* ------------------------------------------------------------------ *)
-
 let test_commit_sm80_empty () =
   let s = Tile_op.emit_commit (sm80_op ()) "mbar" 0 in
   Alcotest.(check string) "empty" "" s
@@ -138,10 +118,6 @@ let test_commit_sm100 () =
   in
   Alcotest.(check bool) "has commit" true (contains "commit" s);
   Alcotest.(check bool) "has mbar"   true (contains "mbar" s)
-
-(* ------------------------------------------------------------------ *)
-(* emit_tmem_alloc / dealloc                                           *)
-(* ------------------------------------------------------------------ *)
 
 let test_alloc_registers_empty () =
   let s = Tile_op.emit_tmem_alloc (sm80_op ()) "tmem_addr" in
@@ -168,10 +144,6 @@ let test_dealloc_tmem () =
     done; !found
   in
   Alcotest.(check bool) "has dealloc" true (contains "dealloc" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Tile_op" [

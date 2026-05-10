@@ -1,8 +1,5 @@
 open Tesserae
 
-(* ------------------------------------------------------------------ *)
-(* make / validation                                                   *)
-(* ------------------------------------------------------------------ *)
 
 let test_make_valid_cta1 () =
   let t = Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:128 ~num_rows:128 in
@@ -28,10 +25,6 @@ let test_make_invalid_cta1_cols () =
     (Invalid_argument "CTA1 num_cols must be <= 256")
     (fun () -> ignore (Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:512 ~num_rows:128))
 
-(* ------------------------------------------------------------------ *)
-(* address                                                             *)
-(* ------------------------------------------------------------------ *)
-
 let test_address_origin () =
   Alcotest.(check int) "0,0" 0 (Tmem.address ~row:0 ~col:0)
 
@@ -47,10 +40,6 @@ let test_address_both () =
   (* row=2, col=16 → (2 lsl 16) lor 16 = 131088 *)
   Alcotest.(check int) "2,16" 131088 (Tmem.address ~row:2 ~col:16)
 
-(* ------------------------------------------------------------------ *)
-(* warp_row_offset                                                     *)
-(* ------------------------------------------------------------------ *)
-
 let test_warp_offset_0 () =
   let t = Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:128 ~num_rows:128 in
   Alcotest.(check int) "warp 0" 0 (Tmem.warp_row_offset t 0)
@@ -62,10 +51,6 @@ let test_warp_offset_1 () =
 let test_warp_offset_3 () =
   let t = Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:128 ~num_rows:128 in
   Alcotest.(check int) "warp 3" 96 (Tmem.warp_row_offset t 3)
-
-(* ------------------------------------------------------------------ *)
-(* elems_per_thread_per_load / num_loads_per_warp                     *)
-(* ------------------------------------------------------------------ *)
 
 let test_elems_per_thread () =
   let t = Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:128 ~num_rows:128 in
@@ -81,10 +66,6 @@ let test_num_loads_128 () =
   let t = Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:128 ~num_rows:128 in
   Alcotest.(check int) "16 loads" 16 (Tmem.num_loads_per_warp t)
 
-(* ------------------------------------------------------------------ *)
-(* total_elems / bytes                                                 *)
-(* ------------------------------------------------------------------ *)
-
 let test_total_elems () =
   let t = Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:64 ~num_rows:128 in
   Alcotest.(check int) "8192" 8192 (Tmem.total_elems t)
@@ -92,10 +73,6 @@ let test_total_elems () =
 let test_bytes () =
   let t = Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:64 ~num_rows:128 in
   Alcotest.(check int) "32768" 32768 (Tmem.bytes t)
-
-(* ------------------------------------------------------------------ *)
-(* PTX emission                                                        *)
-(* ------------------------------------------------------------------ *)
 
 let test_alloc_ptx_cta1 () =
   let t = Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:128 ~num_rows:128 in
@@ -166,10 +143,6 @@ let test_ld_ptx () =
   Alcotest.(check bool) "has tcgen05.ld"  true (contains "tcgen05.ld" s);
   Alcotest.(check bool) "has 32x32b"      true (contains "32x32b" s);
   Alcotest.(check bool) "has taddr"       true (contains "taddr" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Tmem" [

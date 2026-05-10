@@ -47,10 +47,6 @@ let blackwell_gemm () =
           ; ("C", Kernel_ast.F32,  Kernel_ast.Global) ]
     ~body:(gemm_body ())
 
-(* ------------------------------------------------------------------ *)
-(* make                                                                *)
-(* ------------------------------------------------------------------ *)
-
 let test_make_name () =
   Alcotest.(check string) "name" "gemm_f16"
     (ampere_gemm ()).Kernel_ast.name
@@ -70,10 +66,6 @@ let test_make_stages () =
   Alcotest.(check int) "stages" 4
     (ampere_gemm ()).Kernel_ast.stages
 
-(* ------------------------------------------------------------------ *)
-(* tensor_expr constructors                                            *)
-(* ------------------------------------------------------------------ *)
-
 let test_arg () =
   let a = Kernel_ast.arg "A" Kernel_ast.F16 Kernel_ast.Global in
   Alcotest.(check bool) "is arg" true
@@ -84,9 +76,7 @@ let test_smem () =
   Alcotest.(check bool) "is smem" true
     (match s with Kernel_ast.Smem ("smem_A", _, _) -> true | _ -> false)
 
-(* ------------------------------------------------------------------ *)
-(* stmt constructors                                                   *)
-(* ------------------------------------------------------------------ *)
+
 
 let test_load_stmt () =
   let a  = Kernel_ast.arg "A" Kernel_ast.F16 Kernel_ast.Global in
@@ -129,9 +119,7 @@ let test_syncthreads () =
      | Kernel_ast.Barrier Kernel_ast.ThreadSync -> true
      | _ -> false)
 
-(* ------------------------------------------------------------------ *)
-(* warp_dispatch                                                       *)
-(* ------------------------------------------------------------------ *)
+
 
 let test_warp_dispatch_seq () =
   let s = Kernel_ast.warp_dispatch
@@ -148,9 +136,7 @@ let test_warp_dispatch_length () =
   Alcotest.(check bool) "3 branches" true
     (match s with Kernel_ast.Seq xs -> List.length xs = 3 | _ -> false)
 
-(* ------------------------------------------------------------------ *)
-(* args                                                                *)
-(* ------------------------------------------------------------------ *)
+
 
 let test_args_count () =
   Alcotest.(check int) "3 args" 3
@@ -164,9 +150,7 @@ let test_args_names () =
   Alcotest.(check bool) "has B" true (List.mem "B" names);
   Alcotest.(check bool) "has C" true (List.mem "C" names)
 
-(* ------------------------------------------------------------------ *)
-(* pp                                                                  *)
-(* ------------------------------------------------------------------ *)
+
 
 let test_pp_contains_name () =
   let s = Stdlib.Format.asprintf "%a" Kernel_ast.pp (ampere_gemm ()) in
@@ -192,9 +176,7 @@ let test_pp_blackwell () =
   Alcotest.(check bool) "has SM100"   true (contains "SM100" s);
   Alcotest.(check bool) "has 128x256" true (contains "128x256" s)
 
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
+
 
 let () =
   Alcotest.run "Kernel_ast" [

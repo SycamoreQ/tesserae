@@ -4,10 +4,6 @@ let i n    = Modes.Int n
 let tup ts = Modes.Tuple ts
 let lay s d = Layout.make s d
 
-(* ------------------------------------------------------------------ *)
-(* sort                                                                *)
-(* ------------------------------------------------------------------ *)
-
 let test_sort_already_sorted () =
   let l = lay (tup [i 4; i 2]) (tup [i 1; i 4]) in
   let s = Algebra.sort l in
@@ -30,10 +26,6 @@ let test_sort_three_modes () =
   Alcotest.(check (list int)) "strides" [1; 3; 12] strides;
   let shapes = Modes.flatten s.Layout.shape in
   Alcotest.(check (list int)) "shapes" [3; 4; 2] shapes
-
-(* ------------------------------------------------------------------ *)
-(* coalesce                                                            *)
-(* ------------------------------------------------------------------ *)
 
 let test_coalesce_contiguous () =
   let l = lay (tup [i 2; i 4]) (tup [i 1; i 2]) in
@@ -70,10 +62,6 @@ let test_coalesce_three_contiguous () =
   let shapes = Modes.flatten c.Layout.shape in
   Alcotest.(check (list int)) "shape" [24] shapes
 
-(* ------------------------------------------------------------------ *)
-(* is_admissible                                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_admissible_simple () =
   Alcotest.(check bool) "simple" true
     (Algebra.is_admissible (lay (i 4) (i 1)) 8)
@@ -89,10 +77,6 @@ let test_admissible_false_gap () =
 let test_admissible_false_m () =
   Alcotest.(check bool) "bad m" false
     (Algebra.is_admissible (lay (i 4) (i 1)) 6)
-
-(* ------------------------------------------------------------------ *)
-(* complement                                                          *)
-(* ------------------------------------------------------------------ *)
 
 let test_complement_simple () =
   let a = lay (i 4) (i 1) in
@@ -128,10 +112,6 @@ let test_complement_bijection () =
   done;
   let all_one = Array.for_all (fun x -> x = 1) hits in
   Alcotest.(check bool) "bijection" true all_one
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Algebra" [

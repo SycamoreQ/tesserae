@@ -4,9 +4,6 @@ let i n    = Modes.Int n
 let tup ts = Modes.Tuple ts
 let lay s d = Layout.make s d
 
-(* ------------------------------------------------------------------ *)
-(* flat_divide                                                         *)
-(* ------------------------------------------------------------------ *)
 
 let test_flat_divide_simple () =
   (* layout: 8:1, divisor: 4
@@ -34,10 +31,6 @@ let test_flat_divide_invalid () =
     (Invalid_argument "divisor does not divide layout size")
     (fun () -> ignore (Algebra.flat_divide l 3))
 
-(* ------------------------------------------------------------------ *)
-(* logical_divide                                                      *)
-(* ------------------------------------------------------------------ *)
-
 let test_logical_divide_1d () =
   (* layout: 8:1, tile: 4:1
      result shape: (4,2), strides: (1,4) *)
@@ -52,7 +45,7 @@ let test_logical_divide_1d () =
 
 let test_logical_divide_2d () =
   (* layout: (4,4):(1,4)  col-major 4x4
-     tile:   (2,2):(1,2)  col-major 2x2
+     tile: (2,2):(1,2)  col-major 2x2
      result: shape=((2,2),(2,2)) stride=((1,2),(4,8)) *)
   let l    = lay (tup [i 4; i 4]) (tup [i 1; i 4]) in
   let tile = lay (tup [i 2; i 2]) (tup [i 1; i 2]) in
@@ -72,13 +65,9 @@ let test_logical_divide_invalid () =
     (Invalid_argument "tile does not divide layout")
     (fun () -> ignore (Algebra.logical_divide l tile))
 
-(* ------------------------------------------------------------------ *)
-(* zipped_divide                                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_zipped_divide_2d () =
   (* layout: (4,4):(1,4)
-     tile:   (2,2):(1,2)
+     tile:(2,2):(1,2)
      zipped result shape: ((2,2),(2,2))
      but with interleaved within/across per original mode *)
   let l    = lay (tup [i 4; i 4]) (tup [i 1; i 4]) in
@@ -115,10 +104,6 @@ let test_zipped_divide_idx () =
   let ld_idxs = collect_indices ld in
   let zd_idxs = collect_indices zd in
   Alcotest.(check (list int)) "same index set" ld_idxs zd_idxs
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Divide" [

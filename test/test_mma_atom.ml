@@ -1,9 +1,5 @@
 open Tesserae
 
-(* ------------------------------------------------------------------ *)
-(* shape                                                               *)
-(* ------------------------------------------------------------------ *)
-
 let test_shape_sm80 () =
   let a = Mma_atom.sm80_16x8x16_f32f16f16f32
             Mma_atom.ColMajor Mma_atom.RowMajor in
@@ -21,10 +17,6 @@ let test_shape_sm100 () =
             Mma_atom.ColMajor Mma_atom.RowMajor in
   Alcotest.(check (triple int int int)) "128x128x16" (128, 128, 16)
     (Mma_atom.shape a)
-
-(* ------------------------------------------------------------------ *)
-(* thread_count                                                        *)
-(* ------------------------------------------------------------------ *)
 
 let test_thread_count_sm80 () =
   let a = Mma_atom.sm80_16x8x8_f32f16f16f32
@@ -66,10 +58,6 @@ let test_is_wgmma_true_sm100 () =
   Alcotest.(check bool) "sm100 is wgmma" true
     (Mma_atom.is_wgmma a)
 
-(* ------------------------------------------------------------------ *)
-(* emit_cpp                                                            *)
-(* ------------------------------------------------------------------ *)
-
 let test_emit_sm80_tn () =
   (* ColMajor A, RowMajor B → TN in CUTLASS convention *)
   let a = Mma_atom.sm80_16x8x16_f32f16f16f32
@@ -106,10 +94,6 @@ let test_emit_s32s8s8s32 () =
     "SM80_16x8x32_S32S8S8S32_TN"
     (Mma_atom.emit_cpp a)
 
-(* ------------------------------------------------------------------ *)
-(* pp                                                                  *)
-(* ------------------------------------------------------------------ *)
-
 let test_pp () =
   let a = Mma_atom.sm80_16x8x16_f32f16f16f32
             Mma_atom.ColMajor Mma_atom.RowMajor in
@@ -117,10 +101,6 @@ let test_pp () =
   Alcotest.(check string) "pp"
     "SM80_16x8x16_F32F16F16F32_TN"
     s
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Mma_atom" [

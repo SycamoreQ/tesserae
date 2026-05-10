@@ -4,10 +4,6 @@ open Tesserae
    tile_bytes = (128 + 128) * 64 * 2 = 32768 bytes *)
 let p4 () = Pipeline.make 4 32768
 
-(* ------------------------------------------------------------------ *)
-(* make / validation                                                   *)
-(* ------------------------------------------------------------------ *)
-
 let test_make_valid () =
   let p = p4 () in
   Alcotest.(check int) "depth" 4 p.Pipeline.depth;
@@ -24,10 +20,6 @@ let test_make_invalid_tile () =
     (Invalid_argument "tile_bytes must be > 0")
     (fun () -> ignore (Pipeline.make 4 0))
 
-(* ------------------------------------------------------------------ *)
-(* stage_of / phase_of                                                 *)
-(* ------------------------------------------------------------------ *)
-
 let test_stage_of () =
   Alcotest.(check int) "iter 0" 0 (Pipeline.stage_of 0 4);
   Alcotest.(check int) "iter 3" 3 (Pipeline.stage_of 3 4);
@@ -39,10 +31,6 @@ let test_phase_of () =
   Alcotest.(check int) "iter 3" 0 (Pipeline.phase_of 3 4);
   Alcotest.(check int) "iter 4" 1 (Pipeline.phase_of 4 4);
   Alcotest.(check int) "iter 8" 0 (Pipeline.phase_of 8 4)
-
-(* ------------------------------------------------------------------ *)
-(* smem offsets                                                        *)
-(* ------------------------------------------------------------------ *)
 
 let test_smem_offset () =
   let p = p4 () in
@@ -61,10 +49,6 @@ let test_b_offset () =
   (* B follows A: offset = stage_offset + 128*64*2 = stage_offset + 16384 *)
   Alcotest.(check int) "b stage 0" 16384 (Pipeline.b_smem_offset_of p 0 128 64 2);
   Alcotest.(check int) "b stage 1" 49152 (Pipeline.b_smem_offset_of p 1 128 64 2)
-
-(* ------------------------------------------------------------------ *)
-(* emit                                                                *)
-(* ------------------------------------------------------------------ *)
 
 let test_emit_full_mbar () =
   let p = p4 () in
@@ -95,10 +79,6 @@ let test_emit_phase_toggle () =
   Alcotest.(check string) "phase toggle"
     "if (stage == 0) phase ^= 1;"
     (Pipeline.emit_phase_toggle "phase" "stage" p)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Pipeline" [

@@ -43,10 +43,6 @@ let hopper_wgmma () =
     (lay (tup [i 1; i 1]) (tup [i 1; i 0]))
     (tup [i 64; i 64])
 
-(* ------------------------------------------------------------------ *)
-(* make / validation                                                   *)
-(* ------------------------------------------------------------------ *)
-
 let test_make_valid () =
   let t = single_warp_mma () in
   Alcotest.(check int) "threads" 32 (Tiled_mma.thread_count t)
@@ -61,10 +57,6 @@ let test_make_invalid_threads () =
          (lay (i 64) (i 1))   (* wrong: 64 instead of 32 *)
          (lay (tup [i 1; i 1]) (tup [i 1; i 0]))
          (tup [i 16; i 8])))
-
-(* ------------------------------------------------------------------ *)
-(* thread_count / warp_count                                           *)
-(* ------------------------------------------------------------------ *)
 
 let test_thread_count_single () =
   Alcotest.(check int) "32" 32
@@ -82,9 +74,6 @@ let test_warp_count_four () =
   Alcotest.(check int) "4" 4
     (Tiled_mma.warp_count (four_warp_mma ()))
 
-(* ------------------------------------------------------------------ *)
-(* tile_shape_mnk                                                      *)
-(* ------------------------------------------------------------------ *)
 
 let test_tile_mnk_single () =
   Alcotest.(check (triple int int int)) "16x8x16" (16, 8, 16)
@@ -97,10 +86,6 @@ let test_tile_mnk_four () =
 let test_tile_mnk_hopper () =
   Alcotest.(check (triple int int int)) "64x64x16" (64, 64, 16)
     (Tiled_mma.tile_shape_mnk (hopper_wgmma ()))
-
-(* ------------------------------------------------------------------ *)
-(* partition_c                                                         *)
-(* ------------------------------------------------------------------ *)
 
 let test_partition_c_single () =
   (* atom 16x8, 32 threads, 1 warp
@@ -123,10 +108,6 @@ let test_partition_c_hopper () =
   let t = hopper_wgmma () in
   let c = Tiled_mma.partition_c t in
   Alcotest.(check int) "c size" 32 (Layout.size c)
-
-(* ------------------------------------------------------------------ *)
-(* emit_cpp                                                            *)
-(* ------------------------------------------------------------------ *)
 
 let test_emit_single_warp () =
   let t = single_warp_mma () in
@@ -156,10 +137,6 @@ let test_emit_hopper () =
   in
   Alcotest.(check bool) "has sm90 atom" true
     (contains "SM90_64x64x16_F32F16F16F32_TN" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Tiled_mma" [

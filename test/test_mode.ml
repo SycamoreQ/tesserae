@@ -12,7 +12,7 @@ let test_size_flat_tuple () =
     (Modes.size (t_tup [t_int 2; t_int 3; t_int 4]))
 
 let test_size_nested () =
-  (* shape (2, (3, 4)) → 2 * 3 * 4 = 24 *)
+  (* shape (2, (3, 4)) equals 2 * 3 * 4 = 24 *)
   Alcotest.(check int) "nested size" 24
     (Modes.size (t_tup [t_int 2; t_tup [t_int 3; t_int 4]]))
 

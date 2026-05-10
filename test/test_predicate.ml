@@ -4,10 +4,6 @@ let i n    = Modes.Int n
 let tup ts = Modes.Tuple ts
 let lay s d = Layout.make s d
 
-(* ------------------------------------------------------------------ *)
-(* make / validation                                                   *)
-(* ------------------------------------------------------------------ *)
-
 let test_make_valid () =
   (* layout rank 2, bounds has 2 entries — valid *)
   let l = lay (tup [i 4; i 4]) (tup [i 1; i 4]) in
@@ -20,10 +16,6 @@ let test_make_invalid () =
     (Invalid_argument "bounds length must match layout rank")
     (fun () -> ignore (Predicate.make l [6]))
 
-(* ------------------------------------------------------------------ *)
-(* is_in_bounds                                                        *)
-(* ------------------------------------------------------------------ *)
-
 let test_in_bounds_true () =
   let l = lay (tup [i 4; i 4]) (tup [i 1; i 4]) in
   let p = Predicate.make l [6; 6] in
@@ -33,7 +25,7 @@ let test_in_bounds_true () =
 let test_in_bounds_false_row () =
   let l = lay (tup [i 4; i 4]) (tup [i 1; i 4]) in
   let p = Predicate.make l [3; 6] in
-  (* row coord 3 >= bound 3 → out of bounds *)
+  (* row coord 3 >= bound 3 means out of bounds *)
   Alcotest.(check bool) "out of bounds row" false
     (Predicate.is_in_bounds p [3; 2])
 
@@ -50,10 +42,6 @@ let test_in_bounds_zero () =
     (Predicate.is_in_bounds p [4]);
   Alcotest.(check bool) "coord 5 out" false
     (Predicate.is_in_bounds p [5])
-
-(* ------------------------------------------------------------------ *)
-(* count_valid                                                         *)
-(* ------------------------------------------------------------------ *)
 
 let test_count_valid_full () =
   (* layout 4x4, bounds 4x4 — all 16 valid *)
@@ -73,10 +61,6 @@ let test_count_valid_1d () =
   let p = Predicate.make l [5] in
   Alcotest.(check int) "5 valid" 5 (Predicate.count_valid p)
 
-(* ------------------------------------------------------------------ *)
-(* needs_predication                                                   *)
-(* ------------------------------------------------------------------ *)
-
 let test_needs_predication_false () =
   (* bounds exactly divide shape — no predication needed *)
   let l = lay (tup [i 4; i 4]) (tup [i 1; i 4]) in
@@ -88,10 +72,6 @@ let test_needs_predication_true () =
   let l = lay (tup [i 4; i 4]) (tup [i 1; i 4]) in
   let p = Predicate.make l [3; 4] in
   Alcotest.(check bool) "needs pred" true (Predicate.needs_predication p)
-
-(* ------------------------------------------------------------------ *)
-(* residue                                                             *)
-(* ------------------------------------------------------------------ *)
 
 let test_residue_zero () =
   (* 8 mod 4 = 0 — full tile *)
@@ -107,10 +87,6 @@ let test_residue_partial () =
   Alcotest.(check (list int)) "residue" [2; 3]
     (Predicate.residue p)
 
-(* ------------------------------------------------------------------ *)
-(* emit_predicate_check                                                *)
-(* ------------------------------------------------------------------ *)
-
 let test_emit_check_1d () =
   let l = lay (i 8) (i 1) in
   let p = Predicate.make l [5] in
@@ -124,10 +100,6 @@ let test_emit_check_2d () =
   Alcotest.(check string) "2d check"
     "get<0>(coord) < 6 && get<1>(coord) < 8"
     (Predicate.emit_predicate_check p "coord")
-
-(* ------------------------------------------------------------------ *)
-(* emit_identity_tensor                                                *)
-(* ------------------------------------------------------------------ *)
 
 let test_emit_identity () =
   let l = lay (tup [i 4; i 4]) (tup [i 1; i 4]) in
@@ -143,10 +115,6 @@ let test_emit_identity () =
     (contains "make_identity_tensor" s);
   Alcotest.(check bool) "has var name" true
     (contains "cta_coord" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Predicate" [
