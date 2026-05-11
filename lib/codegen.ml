@@ -41,8 +41,8 @@ let emit_make_tensor
 
 let emit_smem_decl
     (var_name : string)
-    (elem     : _ Elemtype.t)
-    (layout   : Layout.t) : string =
+    (elem : _ Elemtype.t)
+    (layout : Layout.t) : string =
   Printf.sprintf "__shared__ %s %s[%d];"
     (Elemtype.cpp_name elem)
     var_name

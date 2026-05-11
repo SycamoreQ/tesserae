@@ -106,3 +106,7 @@
 (test
   (name test_compile)
   (libraries tesserae alcotest))
+
+(test
+  (name test_nvrtc)
+  (libraries tesserae alcotest base)

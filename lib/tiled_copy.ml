@@ -9,7 +9,7 @@ type ('src, 'dst, 'elem) t = {
 let make
     (atom : ('src, 'dst, 'elem) Copy_atom.t)
     (thread_layout : Layout.t)
-    (val_layout    : Layout.t)
+    (val_layout : Layout.t)
   : ('src, 'dst, 'elem) t =
   if Layout.size val_layout <> atom.Copy_atom.vec_width then
     invalid_arg "val_layout size does not match atom vec_width";

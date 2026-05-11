@@ -53,14 +53,13 @@ let to_source_exn (k : Kernel_ast.kernel) : result =
 
 let to_ptx (k : Kernel_ast.kernel)
   : (result, compile_error) Result.t =
-  (* Phase 4 stub — nvrtc integration goes here *)
   match to_source k with
   | Error e -> Error e
-  | Ok r    ->
-    (* TODO Phase 4:
-       let ptx = Nvrtc.compile r.source ~arch:k.arch in
-       Ok { r with ptx = Some ptx } *)
-    Ok { r with ptx = Some "(* nvrtc stub — Phase 4 *)" }
+  | Ok r ->
+    let arch = Nvrtc.arch_string k.Kernel_ast.arch in
+    match Nvrtc.compile_source r.source ~name:(r.kernel_name ^ ".cu") ~arch () with
+    | Error msg -> Error (NvrtcError msg)
+    | Ok ptx    -> Ok { r with ptx = Some ptx }
 
 let write_source (k : Kernel_ast.kernel) (path : string) : unit =
   let r = to_source_exn k in
