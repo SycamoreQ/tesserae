@@ -110,7 +110,7 @@ let test_to_ptx_ok () =
 
 let test_to_ptx_has_ptx () =
   match Compile.to_ptx (ampere ()) with
-  | Ok r    -> Alcotest.(check bool) "some" true (Option.is_some r.Compile.ptx)
+  | Ok r -> Alcotest.(check bool) "some" true (Option.is_some r.Compile.ptx)
   | Error _ -> Alcotest.fail "expected ok"
 
 (* ------------------------------------------------------------------ *)

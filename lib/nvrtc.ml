@@ -1,5 +1,26 @@
 type program  (* abstract — backed by custom block *)
 
+let cuda_include_flags () =
+  [ "--gpu-architecture=sm_80"  (* overridden by caller *)
+  ; "-I/usr/local/cuda/include"
+  ; "-I/usr/include"
+  ; "-I/usr/lib/gcc/x86_64-linux-gnu/12/include"
+  ; "-I/usr/local/cuda/extras/CUPTI/include" ]
+
+let cute_include_flags () =
+  (* CUTLASS/CuTe headers — adjust path if needed *)
+  [ "-I/usr/local/cutlass/include"
+  ; "-I/usr/local/cutlass/tools/util/include" ]
+
+let default_flags () =
+  cute_include_flags () @ [
+    "-I/usr/local/cuda/include"
+  ; "-I/usr/include"
+  ; "-I/usr/lib/gcc/x86_64-linux-gnu/12/include"
+  ; "--std=c++17"
+  ; "--expt-relaxed-constexpr"  (* required for CuTe templates *)
+  ]
+
 external create_program : string -> string -> program
   = "caml_nvrtc_create"
 
@@ -26,10 +47,16 @@ let arch_string = function
 let compile_source source ~name ~arch ?(options=[]) () =
   let prog = create_program source name in
   let arch_flag = Printf.sprintf "--gpu-architecture=%s" arch in
-  let all_opts = arch_flag :: options in
+  let all_opts = arch_flag :: (default_flags () @ options) in
   match compile_program prog all_opts with
-  | Error msg -> destroy_program prog; Error msg
+  | Error msg ->
+    destroy_program prog;
+    Error msg
   | Ok () ->
     let ptx = get_ptx prog in
     destroy_program prog;
     Ok ptx
+
+
+let compile_source_default source ~name =
+  compile_source source ~name ~arch:"sm_80" ()

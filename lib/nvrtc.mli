@@ -21,3 +21,5 @@ val compile_source :
   arch:string ->
   ?options:string list ->
   unit -> (string, string) Result.t
+
+val compile_source_default : string -> name:string -> (string, string) result

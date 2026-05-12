@@ -2,7 +2,6 @@ open Tesserae
 
 (* A minimal valid CUDA kernel for testing nvrtc compilation *)
 let trivial_source = {|
-#include <stdint.h>
 extern "C" __global__ void trivial_kernel(float* out, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n) out[idx] = 1.0f;
