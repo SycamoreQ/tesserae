@@ -1,12 +1,12 @@
 type program  (* abstract — backed by custom block *)
 
-external create_program  : string -> string -> program
+external create_program : string -> string -> program
   = "caml_nvrtc_create"
 
 external destroy_program : program -> unit
   = "caml_nvrtc_destroy"
 
-external is_valid        : program -> bool
+external is_valid : program -> bool
   = "caml_nvrtc_is_valid"
 
 external compile_program : program -> string list -> (unit, string) Result.t
@@ -33,6 +33,3 @@ let compile_source source ~name ~arch ?(options=[]) () =
     let ptx = get_ptx prog in
     destroy_program prog;
     Ok ptx
-
-let compile_source_default source ~name =
-  compile_source source ~name ~arch:"sm_80" ()

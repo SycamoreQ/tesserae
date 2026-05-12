@@ -18,6 +18,6 @@ val arch_string : Kernel_ast.arch -> string
 val compile_source :
   string ->
   name:string ->
-  arch:Kernel_ast.arch ->
+  arch:string ->
   ?options:string list ->
-  unit -> (string, string) result
+  unit -> (string, string) Result.t

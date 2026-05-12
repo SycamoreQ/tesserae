@@ -40,18 +40,22 @@ let test_destroy_idempotent () =
 
 let test_compile_trivial () =
   let result = Nvrtc.compile_source trivial_source
-    ~name:"trivial.cu" ~arch:"sm_80" in
+    ~name:"trivial.cu"
+    ~arch:"sm_80"
+    ()
+  in
   Alcotest.(check bool) "ok" true (Result.is_ok result)
+
 
 let test_compile_ptx_nonempty () =
   match Nvrtc.compile_source trivial_source
-    ~name:"trivial.cu" ~arch:"sm_80" with
+    ~name:"trivial.cu" ~arch:"sm_80" () with
   | Ok ptx -> Alcotest.(check bool) "non-empty" true (String.length ptx > 0)
   | Error e -> Alcotest.failf "compile failed: %s" e
 
 let test_compile_ptx_contains_kernel () =
   match Nvrtc.compile_source trivial_source
-    ~name:"trivial.cu" ~arch:"sm_80" with
+    ~name:"trivial.cu" ~arch:"sm_80" () with
   | Ok ptx ->
     let contains sub str =
       let n = String.length sub and m = String.length str in
@@ -66,7 +70,7 @@ let test_compile_ptx_contains_kernel () =
 
 let test_compile_invalid_source () =
   match Nvrtc.compile_source invalid_source
-    ~name:"broken.cu" ~arch:"sm_80" with
+    ~name:"broken.cu" ~arch:"sm_80" () with
   | Ok _    -> Alcotest.fail "expected error"
   | Error e -> Alcotest.(check bool) "has error" true (String.length e > 0)
 
@@ -84,7 +88,7 @@ let test_arch_sm100 () =
 
 let test_compile_kernel_ampere () =
   let src = ampere_source () in
-  match Nvrtc.compile_source src ~name:"gemm.cu" ~arch:"sm_80" with
+  match Nvrtc.compile_source src ~name:"gemm.cu" ~arch:"sm_80" () with
   | Ok ptx ->
     Alcotest.(check bool) "ptx non-empty" true (String.length ptx > 0)
   | Error e ->
@@ -97,13 +101,9 @@ let test_compile_with_options () =
   let result = Nvrtc.compile_source trivial_source
     ~name:"trivial.cu"
     ~arch:"sm_80"
-    ~options:["--use_fast_math"; "--generate-line-info"] in
-  Alcotest.(check bool) "ok" true (Result.is_ok result)
-
-let test_compile_default_arch () =
-  (* no arch specified — should use a sensible default *)
-  let result = Nvrtc.compile_source_default trivial_source
-    ~name:"trivial.cu" in
+    ~options:["--use_fast_math"; "--generate-line-info"]
+    ()
+  in
   Alcotest.(check bool) "ok" true (Result.is_ok result)
 
 let () =
@@ -118,6 +118,5 @@ let () =
                 ; Alcotest.test_case "sm90"      `Quick test_arch_sm90
                 ; Alcotest.test_case "sm100"     `Quick test_arch_sm100 ];
     "kernel",   [ Alcotest.test_case "ampere"    `Quick test_compile_kernel_ampere ];
-    "options",  [ Alcotest.test_case "fast-math" `Quick test_compile_with_options
-                ; Alcotest.test_case "default"   `Quick test_compile_default_arch ];
+    "options",  [ Alcotest.test_case "fast-math" `Quick test_compile_with_options];
   ]

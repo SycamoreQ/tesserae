@@ -109,4 +109,4 @@
 
 (test
   (name test_nvrtc)
-  (libraries tesserae alcotest base)
+  (libraries tesserae alcotest base))
