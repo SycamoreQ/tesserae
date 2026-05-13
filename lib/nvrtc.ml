@@ -1,25 +1,20 @@
 type program  (* abstract — backed by custom block *)
 
-let cuda_include_flags () =
-  [ "--gpu-architecture=sm_80"  (* overridden by caller *)
-  ; "-I/usr/local/cuda/include"
-  ; "-I/usr/include"
-  ; "-I/usr/lib/gcc/x86_64-linux-gnu/12/include"
-  ; "-I/usr/local/cuda/extras/CUPTI/include" ]
-
 let cute_include_flags () =
   (* CUTLASS/CuTe headers — adjust path if needed *)
   [ "-I/usr/local/cutlass/include"
   ; "-I/usr/local/cutlass/tools/util/include" ]
 
-let default_flags () =
-  cute_include_flags () @ [
-    "-I/usr/local/cuda/include"
-  ; "-I/usr/include"
-  ; "-I/usr/lib/gcc/x86_64-linux-gnu/12/include"
-  ; "--std=c++17"
-  ; "--expt-relaxed-constexpr"  (* required for CuTe templates *)
-  ]
+let default_flags () = [
+  "-I/usr/local/cuda/include"
+; "-I/usr/include"
+; "-I/usr/lib/gcc/x86_64-linux-gnu/12/include"
+; "-I/usr/local/cuda/extras/CUPTI/include"
+; "-I/usr/local/cutlass/include"
+; "-I/usr/local/cutlass/tools/util/include"
+; "--std=c++17"
+; "--expt-relaxed-constexpr"
+]
 
 external create_program : string -> string -> program
   = "caml_nvrtc_create"
