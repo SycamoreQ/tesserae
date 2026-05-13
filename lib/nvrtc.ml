@@ -1,19 +1,13 @@
 type program  (* abstract — backed by custom block *)
 
-let cute_include_flags () =
-  (* CUTLASS/CuTe headers — adjust path if needed *)
-  [ "-I/usr/local/cutlass/include"
-  ; "-I/usr/local/cutlass/tools/util/include" ]
-
 let default_flags () = [
   "-I/usr/local/cuda/include"
+; "-I/usr/local/cuda-13.0/targets/x86_64-linux/include/cccl"
 ; "-I/usr/include"
-; "-I/usr/lib/gcc/x86_64-linux-gnu/12/include"
-; "-I/usr/local/cuda/extras/CUPTI/include"
-; "-I/usr/local/cutlass/include"
-; "-I/usr/local/cutlass/tools/util/include"
+; "-I/usr/lib/gcc/x86_64-linux-gnu/13/include"
+; "-I/tmp/cutlass_latest/include"
 ; "--std=c++17"
-; "--expt-relaxed-constexpr"
+; "--device-as-default-execution-space"
 ]
 
 external create_program : string -> string -> program

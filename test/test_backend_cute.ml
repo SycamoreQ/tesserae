@@ -51,7 +51,7 @@ let test_includes_pragma () =
 let test_includes_cute () =
   let (Lower.Pack desc) = Lower.lower_exn (ampere_kernel ()) in
   Alcotest.(check bool) "cute" true
-    (contains "cute.hpp" (Backend_cute.emit_includes desc))
+    (contains "tensor.hpp" (Backend_cute.emit_includes desc))
 
 let test_includes_bf16 () =
   let (Lower.Pack desc) = Lower.lower_exn (hopper_kernel ()) in
@@ -151,7 +151,7 @@ let test_epilogue_store () =
 let test_epilogue_predicate () =
   let (Lower.Pack desc) = Lower.lower_exn (ampere_kernel ()) in
   Alcotest.(check bool) "predicate" true
-    (contains "predicate" (Backend_cute.emit_epilogue_body desc))
+    (contains "< M" (Backend_cute.emit_epilogue_body desc))
 
 let test_epilogue_tcgen05_ld () =
   let (Lower.Pack desc) = Lower.lower_exn (blackwell_kernel ()) in

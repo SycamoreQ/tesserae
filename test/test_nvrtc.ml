@@ -2,7 +2,7 @@ open Tesserae
 
 (* A minimal valid CUDA kernel for testing nvrtc compilation *)
 let trivial_source = {|
-extern "C" __global__ void trivial_kernel(float* out, int n) {
+__global__ void trivial_kernel(float* out, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n) out[idx] = 1.0f;
 }
@@ -38,12 +38,11 @@ let test_destroy_idempotent () =
   Alcotest.(check bool) "ok" true true
 
 let test_compile_trivial () =
-  let result = Nvrtc.compile_source trivial_source
-    ~name:"trivial.cu"
-    ~arch:"sm_80"
-    ()
-  in
-  Alcotest.(check bool) "ok" true (Result.is_ok result)
+  match Nvrtc.compile_source trivial_source ~name:"trivial.cu" ~arch:"sm_80" () with
+  | Ok _    -> Alcotest.(check bool) "ok" true true
+  | Error e ->
+    Printf.printf "NVRTC error: %s\n%!" e;
+    Alcotest.(check bool) "ok" true false
 
 
 let test_compile_ptx_nonempty () =

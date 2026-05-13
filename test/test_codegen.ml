@@ -4,6 +4,13 @@ let i n    = Modes.Int n
 let tup ts = Modes.Tuple ts
 let lay s d = Layout.make s d
 
+let contains sub str =
+  let n = String.length sub and m = String.length str in
+  let found = ref false in
+  for i = 0 to m - n do
+    if String.sub str i n = sub then found := true
+  done; !found
+
 (* --- emit_shape --- *)
 let test_shape_scalar () =
   Alcotest.(check string) "scalar" "_4"
@@ -84,14 +91,8 @@ let test_include_guard () =
 (* --- emit_cute_includes --- *)
 let test_cute_includes () =
   let s = Codegen.emit_cute_includes () in
-  let found = ref false in
-  let needle = "cute/cute.hpp" in
-  let nlen = String.length needle in
-  let slen = String.length s in
-  for i = 0 to slen - nlen do
-    if String.sub s i nlen = needle then found := true
-  done;
-  Alcotest.(check bool) "has cute.hpp" true !found
+  Alcotest.(check bool) "has cute" true
+    (contains "tensor.hpp" s)
 
 (* --- runner --- *)
 let () =

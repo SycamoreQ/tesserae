@@ -2,11 +2,17 @@
  (name tesserae)
  (foreign_stubs
   (language c)
-  (names nvrtc_stub)
+  (names nvrtc_stub gpu_buffer_stubs)
   (flags :standard -I/usr/local/cuda/include))
  (libraries base stdio unix)
- (c_library_flags -L/usr/local/cuda/lib -lnvrtc -lcuda) ; Removed '64' for Mac
+ (rule
+  (targets gpu_buffer_stubs.o)
+  (deps gpu_buffer_stubs.c)
+  (action (run nvcc -c %{deps} -o %{targets}
+    -I/usr/local/cuda/include
+    -Xcompiler -fPIC)))
+ (c_library_flags -L/usr/local/cuda/lib -lnvrtc -lcuda -lcudart)
  (modules modes layout compose memspace tensor algebra elemtype
           codegen swizzle mma_atom copy_atom tiled_mma tiled_copy
           predicate tmem cluster pipeline smem_desc tile_io tile_op
-          kernel_desc kernel_ast lower backend_cute compile nvrtc))
+          kernel_desc kernel_ast lower backend_cute compile nvrtc gpu_buffer))

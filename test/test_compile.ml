@@ -105,8 +105,16 @@ let test_source_blackwell_tcgen05 () =
 (* ------------------------------------------------------------------ *)
 
 let test_to_ptx_ok () =
-  Alcotest.(check bool) "ok" true
-    (Result.is_ok (Compile.to_ptx (ampere ())))
+  match Compile.to_ptx (ampere ()) with
+  | Ok _    -> Alcotest.(check bool) "ok" true true
+  | Error e ->
+    let msg = match e with
+      | Compile.NvrtcError s  -> "NvrtcError: " ^ s
+      | Compile.LowerError _  -> "LowerError"
+      | Compile.LaunchError s -> "LaunchError: " ^ s
+    in
+    Printf.printf "COMPILE ERROR: %s\n%!" msg;
+    Alcotest.(check bool) "ok" true false
 
 let test_to_ptx_has_ptx () =
   match Compile.to_ptx (ampere ()) with

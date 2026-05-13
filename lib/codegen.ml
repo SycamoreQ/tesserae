@@ -52,9 +52,10 @@ let emit_include_guard () : string = "#pragma once"
 
 let emit_cute_includes () : string =
   String.concat ~sep:"\n" [
-    "#include <cute/cute.hpp>";
     "#include <cute/tensor.hpp>";
     "#include <cute/atom/mma_atom.hpp>";
     "#include <cute/atom/copy_atom.hpp>";
+    "#include <cute/algorithm/gemm.hpp>";
+    "#include <cute/algorithm/copy.hpp>";
     "using namespace cute;";
   ]

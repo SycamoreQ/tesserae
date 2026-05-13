@@ -110,3 +110,15 @@
 (test
   (name test_nvrtc)
   (libraries tesserae alcotest base))
+
+(test
+  (name test_gpu_buffer)
+  (libraries tesserae alcotest base))
+
+(test
+  (name test_kernel_launch)
+  (libraries tesserae alcotest base))
+
+(test
+  (name test_runtime)
+  (libraries tesserae alcotest base))

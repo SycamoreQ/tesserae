@@ -56,8 +56,21 @@ let to_ptx (k : Kernel_ast.kernel)
   match to_source k with
   | Error e -> Error e
   | Ok r ->
-    let _arch = Nvrtc.arch_string k.Kernel_ast.arch in
-    match Nvrtc.compile_source r.source ~name:(r.kernel_name ^ ".cu") ~arch: "sm_80" () with
+    let arch = Nvrtc.arch_string k.Kernel_ast.arch in
+    let cutlass_path =
+      Option.value
+        (Sys.getenv "CUTLASS_PATH")
+        ~default:"/tmp/cutlass_latest/include"
+    in
+    let opts = [
+      Printf.sprintf "--include-path=%s" cutlass_path;
+      "--std=c++17";
+    ] in
+    match Nvrtc.compile_source r.source
+      ~name:(r.kernel_name ^ ".cu")
+      ~arch
+      ~options:opts
+      () with
     | Error msg -> Error (NvrtcError msg)
     | Ok ptx    -> Ok { r with ptx = Some ptx }
 
