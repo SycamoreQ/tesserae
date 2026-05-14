@@ -1,0 +1,13 @@
+(library
+ (name tesserae_runtime)
+ (wrapped true)
+ (libraries base stdio unix tesserae_core tesserae_kernel tesserae_backend)
+ (foreign_stubs
+  (language c)
+  (names nvrtc_stub gpu_buffer_stubs)
+  (flags :standard -I/usr/local/cuda/include))
+ (c_library_flags -L/usr/local/cuda/lib -lnvrtc -lcuda -lcudart)
+ (modules
+   nvrtc
+   gpu_buffer
+   compile))

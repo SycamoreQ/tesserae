@@ -1,0 +1,14 @@
+(library
+ (name tesserae_core)
+ (wrapped true)
+ (libraries base stdio)
+ (modules
+   modes
+   layout
+   elemtype
+   memspace
+   compose
+   algebra
+   tensor
+   swizzle
+   codegen))

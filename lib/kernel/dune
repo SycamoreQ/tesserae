@@ -1,0 +1,11 @@
+(library
+ (name tesserae_kernel)
+ (wrapped true)
+ (ocamlopt_flags (:standard -w -69))
+ (ocamlc_flags (:standard -w -69))
+ (libraries base tesserae_core tesserae_atoms tesserae_pipeline)
+ (modules
+   kernel_ast
+   kernel_desc
+   kernel_launch
+   lower))

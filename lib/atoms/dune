@@ -1,0 +1,9 @@
+(library
+ (name tesserae_atoms)
+ (wrapped true)
+ (libraries base tesserae_core)
+ (modules
+   mma_atom
+   copy_atom
+   tiled_mma
+   tiled_copy))

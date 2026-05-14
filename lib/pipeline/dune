@@ -1,0 +1,12 @@
+(library
+ (name tesserae_pipeline)
+ (wrapped true)
+ (libraries base tesserae_core tesserae_atoms)
+ (modules
+   pipeline
+   cluster
+   predicate
+   smem_desc
+   tmem
+   tile_io
+   tile_op))

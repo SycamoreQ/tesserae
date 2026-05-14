@@ -1,0 +1,6 @@
+(library
+ (name tesserae_tir)
+ (wrapped true)
+ (libraries base tesserae_core tesserae_atoms tesserae_pipeline tesserae_kernel)
+ (modules
+   tir))
