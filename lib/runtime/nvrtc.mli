@@ -1,3 +1,5 @@
+open Tesserae_kernel
+
 type program
 
 (** [create_program source name] initializes a new NVRTC program context. *)

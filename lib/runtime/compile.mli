@@ -1,3 +1,5 @@
+open Tesserae_kernel
+
 (** Compile — the single user-facing entry point for Tesserae.
 
     The full pipeline:

@@ -1,8 +1,4 @@
-open Tesserae_core
-open Tesserae_atoms
-open Tesserae_pipeline
 open Tesserae_kernel
-open Tesserae_tir
 
 (** Backend_cute — emits CuTe C++ from a Kernel_desc.t.
 

@@ -1,3 +1,5 @@
+open Tesserae_kernel
+
 type program
 
 let default_flags () = [
