@@ -143,7 +143,7 @@ type mma_desc = {
 }
 
 type op =
-  | Copy  of copy
+  | Copy of copy
   | Mma  of mma_desc
   | Barrier of barrier
   | TmemAlloc of { addr_var : var; col_count : int }
@@ -202,7 +202,7 @@ type param = {
 }
 
 
-type tir = {
+type tirix = {
   name       : string;
   family     : Kernel_desc.family;
   params     : param list;

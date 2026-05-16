@@ -1,0 +1,17 @@
+
+(test
+  (name test_kernel_desc)
+  (libraries tesserae alcotest))
+
+
+(test
+  (name test_kernel_ast)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_lower)
+  (libraries tesserae alcotest))
+
+  (test
+    (name test_kernel_launch)
+    (libraries tesserae alcotest))

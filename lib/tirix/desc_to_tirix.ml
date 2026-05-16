@@ -3,7 +3,7 @@ open Tesserae_core
 open Tesserae_atoms
 open Tesserae_pipeline
 open Tesserae_kernel
-open Tir
+open Tesserae_Tirix
 
 let var_counter = ref 0
 
@@ -129,7 +129,7 @@ let construct_params (desc : (_, _, _, _, _, _) Kernel_desc.t) =
     param_is_tma = false;
   } in
   (* M, N, K are scalar ints — we represent them as flat global tensors
-     of size 1. Tir_emit will special-case params named M/N/K to emit
+     of size 1. tirix_emit will special-case params named M/N/K to emit
      them as `int M` rather than a pointer. *)
   let m_param = {
     param_name = "M";
@@ -160,7 +160,7 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
     hf_body     = [
       SLet (mk_var "addr" U32 (), Expr (AddrConv (GenericToShared,
         Var (mk_var "ptr" U64 ()))));
-      (* body emits the descriptor bit-packing — Tir_emit handles the
+      (* body emits the descriptor bit-packing — tirix_emit handles the
          actual asm string from SmemDescInit op *)
       SOp (SmemDescInit {
         desc_var = mk_var "desc" U64 ~mut:true ();
@@ -463,7 +463,7 @@ let tmem_dealloc_op
     Some (SOp (TmemDealloc { addr_var = addr; col_count = desc.Kernel_desc.bn }))
 
 
-let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tir =
+let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
   let tensors  = construct_smem_tensors desc in
   let vars     = construct_vars desc in
   let params   = construct_params desc in

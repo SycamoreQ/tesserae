@@ -2,7 +2,7 @@
     Produces human-readable output for debugging, not CUDA C++ emission.
     For CUDA C++ output use Tir_emit. *)
 
-open Tir
+open Tirix
 
 (** [pp_expr e] pretty-prints an expression. *)
 val pp_expr : _ expr -> string
@@ -23,7 +23,7 @@ val pp_stmt : ?depth:int -> stmt -> string
 val pp_helper : helper_func -> string
 
 (** [pp_tir k] pretty-prints the full kernel IR. *)
-val pp_tir : tir -> string
+val pp_tirix : tir -> string
 
 (** [pp_scalar_ty t] returns the C++ type string for a scalar type. *)
 val pp_scalar_ty : _ scalar_ty -> string

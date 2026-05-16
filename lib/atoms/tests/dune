@@ -1,0 +1,15 @@
+(test
+  (name test_mma_atom)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_copy_atom)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_tiled_mma)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_tiled_copy)
+  (libraries tesserae alcotest))

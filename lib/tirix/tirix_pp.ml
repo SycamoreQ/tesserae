@@ -1,5 +1,5 @@
 open Base
-open Tir
+open Tirix
 
 (* ------------------------------------------------------------------ *)
 (* Helpers                                                             *)
@@ -254,7 +254,7 @@ let pp_param (p : param) : string =
   else
     Printf.sprintf "const %s* %s" elem p.param_name
 
-let pp_tir (k : tir) : string =
+let pp_tirix (k : tirix) : string =
   let params = List.map k.params ~f:pp_param
                |> String.concat ~sep:",\n    " in
   let helpers = List.map k.helpers ~f:pp_helper

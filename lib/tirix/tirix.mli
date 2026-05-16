@@ -2,12 +2,12 @@ open Tesserae_core
 open Tesserae_pipeline
 open Tesserae_kernel
 
-(** Tir — Tesserae Intermediate Representation.
+(** tirix — Tesserae Intermediate Representation.
     A typed, structured IR for tiled GPU programs.
     Sits between Kernel_desc and CUDA C++ string emission.
 
     Pipeline:
-      Kernel_ast → Kernel_desc → Tir → Tir_pp → CUDA C++ → nvrtc → PTX *)
+      Kernel_ast → Kernel_desc → tirix → tirix_pp → CUDA C++ → nvrtc → PTX *)
 
 (** {1 Type identity witnesses} *)
 
@@ -207,7 +207,7 @@ type param = {
 
 (** {1 Top-level kernel IR} *)
 
-type tir = {
+type tirix = {
   name       : string;
   family     : Kernel_desc.family;
   params     : param list;
