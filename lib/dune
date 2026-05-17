@@ -6,6 +6,6 @@
    tesserae_atoms
    tesserae_pipeline
    tesserae_kernel
-   tesserae_tir
+   tesserae_tirix
    tesserae_backend
    tesserae_runtime))

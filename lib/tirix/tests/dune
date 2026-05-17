@@ -1,0 +1,8 @@
+(test
+  (name test_tirix_verify)
+  (libraries tesserae alcotest))
+
+
+(test
+  (name test_tirix_emit)
+  (libraries tesserae alcotest))

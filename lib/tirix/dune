@@ -1,6 +1,10 @@
 (library
  (name tesserae_tirix)
  (wrapped true)
- (libraries base tesserae_core tesserae_atoms tesserae_pipeline tesserae_kernel)
+ (libraries base tesserae_core tesserae_atoms tesserae_pipeline tesserae_kernel tesserae_backend)
  (modules
-   tirix))
+   tirix
+   tirix_emit
+   tirix_pp
+   tirix_verify
+   desc_to_tirix))

@@ -3,9 +3,9 @@ open Tesserae_core
 open Tesserae_atoms
 open Tesserae_pipeline
 open Tesserae_kernel
-open Tir
+open Tirix
 
-let verify (tir : Tir.tir) : (unit, string list) Result.t =
+let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
   let errors = ref [] in
   let err msg = errors := msg :: !errors in
 

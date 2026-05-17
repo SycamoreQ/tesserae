@@ -18,6 +18,8 @@ module Type_id : sig
   val equal  : 'a t -> 'b t -> ('a, 'b) eq option
 end
 
+type pipeline_depth = int
+
 (** {1 Scalar types} *)
 
 type _ scalar_ty =
@@ -107,7 +109,7 @@ type barrier =
   | MbarWaitParity   of { mbar : var; phase : int32 expr }
   | MbarArrive       of { mbar : var }
   | ClusterArrive
-  | ClusterWait
+  | ClusterWait (**might need to differentiate between aligned and relaxed**)
   | CpAsyncWaitAll
   | CpAsyncCommitGroup
   | Tcgen05Wait
@@ -214,6 +216,7 @@ type tirix = {
   tensors    : (string * packed_tensor) list;
   smem_bytes : int;
   cluster    : Cluster.t;
+  pipeline_depth : pipeline_depth;
   body       : stmt list;
   helpers    : helper_func list;
 }

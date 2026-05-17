@@ -3,7 +3,7 @@ open Tesserae_core
 open Tesserae_atoms
 open Tesserae_pipeline
 open Tesserae_kernel
-open Tesserae_Tirix
+open Tirix
 
 let var_counter = ref 0
 
@@ -73,9 +73,9 @@ let construct_smem_tensors (desc : (_, _, _, _, _, _) Kernel_desc.t) =
       (tup [i (bm * bk); i 1; i bm]);
     tensor_swizzle = sw;
   } in
-  let smem_b = Tensor {
+  let smem_b = Tirix.Tensor {
     tensor_name = "smem_B";
-    tensor_id = Type_id.create ();
+    tensor_id = Tirix.Type_id.create ();
     tensor_elem_type = elem;
     tensor_memspace = Memspace.Shared;
     tensor_layout = lay
@@ -466,8 +466,8 @@ let tmem_dealloc_op
 let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
   let tensors  = construct_smem_tensors desc in
   let vars     = construct_vars desc in
-  let params   = construct_params desc in
-  let helpers  = construct_helpers desc in
+  let _params   = construct_params desc in
+  let _helpers  = construct_helpers desc in
   let mbar_init = construct_mbar_init desc vars in
   let producer = construct_producer_body desc vars tensors in
   let consumer = construct_consumer_body desc vars tensors in
@@ -489,7 +489,7 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
     SLet (v, Expr (Const (S32, 0l)))) in
   let alloc   = Option.to_list (tmem_alloc_op   desc vars) in
   let dealloc = Option.to_list (tmem_dealloc_op desc vars) in
-  let body =
+  let _body =
     var_decls
     @ alloc
     @ mbar_init
@@ -502,6 +502,7 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
   ; tensors
   ; smem_bytes = Kernel_desc.smem_bytes desc
   ; cluster = desc.Kernel_desc.cluster
+  ; pipeline_depth = 3
   ; body
   ; helpers
   }
