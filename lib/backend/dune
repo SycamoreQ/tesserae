@@ -2,5 +2,4 @@
  (name tesserae_backend)
  (wrapped true)
  (libraries base tesserae_core tesserae_atoms tesserae_pipeline tesserae_kernel tesserae_tirix)
- (modules
-   backend_cute))
+ (modules backend_cute tirix_emit))

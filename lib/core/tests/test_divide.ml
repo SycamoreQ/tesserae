@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_core
 
 let i n    = Modes.Int n
 let tup ts = Modes.Tuple ts

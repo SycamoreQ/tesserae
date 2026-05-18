@@ -1,4 +1,7 @@
 open Base
+open Tesserae_kernel
+open Tesserae_pipeline
+open Tesserae_core
 
 type run_error =
   | CompileError of string

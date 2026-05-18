@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_core
+open Tesserae_atoms
 
 let test_bulk_bytes_f32 () =
   (* cp.async always transfers 16 bytes = 128 bits *)

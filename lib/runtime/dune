@@ -10,4 +10,5 @@
  (modules
    nvrtc
    gpu_buffer
-   compile))
+   compile
+   runtime))

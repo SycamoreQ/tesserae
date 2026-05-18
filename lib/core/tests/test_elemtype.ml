@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_core
 
 (* --- cpp_name --- *)
 let test_cpp_name_float32 () =
@@ -89,7 +89,7 @@ let test_pp_bfloat16 () =
   let s = Stdlib.Format.asprintf "%a" Elemtype.pp Elemtype.Bfloat16 in
   Alcotest.(check string) "pp bfloat16" "__nv_bfloat16" s
 
-(* --- runner --- *)
+
 let () =
   Alcotest.run "Elemtype" [
     "cpp_name",   [ Alcotest.test_case "float32"  `Quick test_cpp_name_float32

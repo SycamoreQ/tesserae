@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_pipeline
 
 
 let test_make_valid_cta1 () =

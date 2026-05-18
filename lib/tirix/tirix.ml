@@ -79,23 +79,34 @@ type addr_conv_kind =
   | ToSharedCluster
   | ClusterToShared
 
-type binop =
-  | Add | Sub | Mul | Div | Mod
-  | Eq  | Ne  | Lt  | Le  | Gt | Ge
-  | And | Or
-  | Shl | Shr
-  | BitAnd | BitOr | BitXor
+module Arith = struct
+  type t = Add | Sub | Mul | Div | Mod
+end
+module Cmp = struct
+  type t = Eq | Ne | Lt | Le | Gt | Ge
+end
+module Logic = struct
+  type t = And | Or
+end
+module Bitwise = struct
+  type t = BitAnd | BitOr | BitXor | Shl | Shr
+end
 
-type unop = Neg | Not | BitNot
+module Unop = struct
+  type t = Neg | Not | BitNot
+end
 
 type _ expr =
   | Const : 'a scalar_ty * 'a -> 'a expr
   | Cast : 'a scalar_ty * 'b expr -> 'a expr
   | Var : var -> 'a expr
-  | Builtin : gpu_builtin -> int32 expr
-  | Binop : binop * 'a expr * 'a expr -> 'a expr
-  | Unop : unop * 'a expr -> 'a expr
-  | AddrConv: addr_conv_kind * 'a expr -> int64 expr
+  | Builtin  : gpu_builtin -> int32 expr
+  | Arith : Arith.t   * 'a expr   * 'a expr   -> 'a expr
+  | Cmp : Cmp.t     * 'a expr   * 'a expr   -> bool expr
+  | Logic : Logic.t   * bool expr * bool expr -> bool expr
+  | Bitwise : Bitwise.t * 'a expr   * 'a expr   -> 'a expr
+  | Unop : Unop.t * 'a expr -> 'a expr
+  | AddrConv : addr_conv_kind * 'a expr -> int64 expr
 
 type packed_expr = Expr : _ expr -> packed_expr
 
@@ -203,12 +214,16 @@ type param = {
 
 
 type tirix = {
-  name       : string;
-  family     : Kernel_desc.family;
-  params     : param list;
-  tensors    : (string * packed_tensor) list;
+  name  : string;
+  family : Kernel_desc.family;
+  params : param list;
+  tensors : (string * packed_tensor) list;
+  bm: int;
+  bn:int;
+  bk: int;
   smem_bytes : int;
-  cluster    : Cluster.t;
-  body       : stmt list;
-  helpers    : helper_func list;
+  cluster : Cluster.t;
+  pipeline_depth: int;
+  body : stmt list;
+  helpers : helper_func list;
 }

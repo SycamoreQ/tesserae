@@ -1,9 +1,7 @@
 open Base
 open Tirix
-
-(* ------------------------------------------------------------------ *)
-(* Helpers                                                             *)
-(* ------------------------------------------------------------------ *)
+open Tesserae_core
+open Tesserae_pipeline
 
 let indent n = String.make (n * 2) ' '
 
@@ -13,74 +11,75 @@ let pp_builtin = function
   | ThreadIdx a  -> Printf.sprintf "threadIdx.%s" (pp_axis a)
   | BlockIdx  a  -> Printf.sprintf "blockIdx.%s"  (pp_axis a)
   | ClusterCtaId -> "cluster_ctaid"
-  | WarpId       -> "warp_id"
-  | LaneId       -> "lane_id"
+  | WarpId -> "warp_id"
+  | LaneId -> "lane_id"
 
 let pp_addr_conv = function
-  | GenericToShared  -> "__cvta_generic_to_shared"
-  | GenericToGlobal  -> "__cvta_generic_to_global"
-  | GenericToLocal   -> "__cvta_generic_to_local"
-  | SharedToGeneric  -> "__cvta_shared_to_generic"
-  | GlobalToGeneric  -> "__cvta_global_to_generic"
-  | LocalToGeneric   -> "__cvta_local_to_generic"
-  | ToSharedCluster  -> "__cvta_to_shared_cluster"
-  | ClusterToShared  -> "__cvta_cluster_to_shared"
+  | GenericToShared -> "__cvta_generic_to_shared"
+  | GenericToGlobal -> "__cvta_generic_to_global"
+  | GenericToLocal -> "__cvta_generic_to_local"
+  | SharedToGeneric -> "__cvta_shared_to_generic"
+  | GlobalToGeneric -> "__cvta_global_to_generic"
+  | LocalToGeneric -> "__cvta_local_to_generic"
+  | ToSharedCluster -> "__cvta_to_shared_cluster"
+  | ClusterToShared -> "__cvta_cluster_to_shared"
 
-let pp_binop = function
-  | Add -> "+" | Sub -> "-" | Mul -> "*" | Div -> "/" | Mod -> "%"
-  | Eq  -> "==" | Ne -> "!=" | Lt -> "<" | Le -> "<=" | Gt -> ">" | Ge -> ">="
-  | And -> "&&" | Or -> "||"
-  | Shl -> "<<" | Shr -> ">>"
-  | BitAnd -> "&" | BitOr -> "|" | BitXor -> "^"
+let pp_arith_op = function
+  | Arith.Add -> "+" | Arith.Sub -> "-" | Arith.Mul -> "*" | Arith.Div -> "/" | Arith.Mod -> "%"
 
-let pp_unop = function Neg -> "-" | Not -> "!" | BitNot -> "~"
+let pp_cmp_op = function
+  | Cmp.Eq  -> "==" | Cmp.Ne -> "!=" | Cmp.Lt -> "<" | Cmp.Le -> "<=" | Cmp.Gt -> ">" | Cmp.Ge -> ">="
+
+let pp_logic_op = function
+  | Logic.And -> "&&" | Logic.Or -> "||"
+
+let pp_bitwise_op = function
+  | Bitwise.BitAnd -> "&" | Bitwise.BitOr -> "|" | Bitwise.BitXor -> "^"
+  | Bitwise.Shl    -> "<<" | Bitwise.Shr -> ">>"
+
+let pp_unop = function Unop.Neg -> "-" | Unop.Not -> "!" | Unop.BitNot -> "~"
 
 let pp_scalar_ty : type a. a scalar_ty -> string = function
-  | U8   -> "uint8_t"
-  | U32  -> "uint32_t"
-  | S32  -> "int32_t"
-  | U64  -> "uint64_t"
-  | F16  -> "__half"
-  | F32  -> "float"
+  | U8 -> "uint8_t"
+  | U32 -> "uint32_t"
+  | S32 -> "int32_t"
+  | U64 -> "uint64_t"
+  | F16 -> "__half"
+  | F32 -> "float"
   | BF16 -> "__nv_bfloat16"
   | Bool -> "bool"
-  | Ptr  -> "uint64_t*"
+  | Ptr -> "uint64_t*"
 
 let pp_packed_scalar (Scalar s) = pp_scalar_ty s
 
-(* ------------------------------------------------------------------ *)
-(* Expressions                                                         *)
-(* ------------------------------------------------------------------ *)
-
 let rec pp_expr : type a. a expr -> string = function
-  | Const (U8,  v) -> string_of_int v
-  | Const (U32, v) -> Printf.sprintf "%lu" v
+  | Const (U8, v) -> Int.to_string v
+  | Const (U32,v) -> Printf.sprintf "%lu" v
   | Const (S32, v) -> Printf.sprintf "%ld" v
-  | Const (U64, v) -> Printf.sprintf "%Lu" v
-  | Const (F16, v) -> Printf.sprintf "__float2half(%f)" v
-  | Const (F32, v) -> Printf.sprintf "%ff" v
+  | Const (U64,v) -> Printf.sprintf "%Lu" v
+  | Const (F16,v) -> Printf.sprintf "__float2half(%f)" v
+  | Const (F32,v) -> Printf.sprintf "%ff" v
   | Const (BF16,v) -> Printf.sprintf "__float2bfloat16(%f)" v
   | Const (Bool,v) -> if v then "true" else "false"
-  | Const (Ptr, v) -> Printf.sprintf "%Lu" v
-  | Cast (ty, e)   -> Printf.sprintf "((%s)(%s))" (pp_scalar_ty ty) (pp_expr e)
-  | Var v          -> v.var_name
-  | Builtin b      -> pp_builtin b
-  | Binop (op, l, r) ->
-    Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_binop op) (pp_expr r)
-  | Unop (op, e)   -> Printf.sprintf "(%s%s)" (pp_unop op) (pp_expr e)
-  | AddrConv (k, e)->
-    Printf.sprintf "%s(%s)" (pp_addr_conv k) (pp_expr e)
+  | Const (Ptr,v) -> Printf.sprintf "%Lu" v
+  | Cast (ty, e) -> Printf.sprintf "((%s)(%s))" (pp_scalar_ty ty) (pp_expr e)
+  | Var v -> v.var_name
+  | Builtin b -> pp_builtin b
+
+  | Arith (op, l, r) -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_arith_op op) (pp_expr r)
+  | Cmp (op, l, r)     -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_cmp_op op) (pp_expr r)
+  | Logic (op, l, r)   -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_logic_op op) (pp_expr r)
+  | Bitwise (op, l, r) -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_bitwise_op op) (pp_expr r)
+
+  | Unop (op, e) -> Printf.sprintf "(%s%s)" (pp_unop op) (pp_expr e)
+  | AddrConv (k, e)    -> Printf.sprintf "%s(%s)" (pp_addr_conv k) (pp_expr e)
 
 let pp_packed_expr (Expr e) = pp_expr e
 
-(* ------------------------------------------------------------------ *)
-(* Barriers                                                            *)
-(* ------------------------------------------------------------------ *)
-
 let pp_barrier = function
-  | CtaSync    -> "__syncthreads();"
-  | WarpSync   -> "__syncwarp();"
-  | MemFence   -> "__threadfence();"
+  | CtaSync -> "__syncthreads();"
+  | WarpSync -> "__syncwarp();"
+  | MemFence -> "__threadfence();"
   | MbarInit { mbar; count } ->
     Printf.sprintf
       "asm volatile(\"mbarrier.init.shared.b64 [%%0], %d;\" :: \"r\"(&%s));"
@@ -97,27 +96,23 @@ let pp_barrier = function
     Printf.sprintf
       "asm volatile(\"mbarrier.arrive.shared.b64 [%%0];\" :: \"r\"(&%s));"
       mbar.var_name
-  | ClusterArrive    -> "asm volatile(\"barrier.cluster.arrive.release.aligned;\");"
-  | ClusterWait      -> "asm volatile(\"barrier.cluster.wait.acquire.aligned;\");"
-  | CpAsyncWaitAll   -> "asm volatile(\"cp.async.wait_all;\");"
+  | ClusterArrive -> "asm volatile(\"barrier.cluster.arrive.release.aligned;\");"
+  | ClusterWait -> "asm volatile(\"barrier.cluster.wait.acquire.aligned;\");"
+  | CpAsyncWaitAll -> "asm volatile(\"cp.async.wait_all;\");"
   | CpAsyncCommitGroup -> "asm volatile(\"cp.async.commit_group;\");"
-  | Tcgen05Wait      -> "asm volatile(\"tcgen05.wait::ld.sync.aligned;\");"
-  | Tcgen05Fence     -> "asm volatile(\"tcgen05.fence::after_thread_sync;\");"
-
-(* ------------------------------------------------------------------ *)
-(* Operations                                                          *)
-(* ------------------------------------------------------------------ *)
+  | Tcgen05Wait -> "asm volatile(\"tcgen05.wait::ld.sync.aligned;\");"
+  | Tcgen05Fence -> "asm volatile(\"tcgen05.fence::after_thread_sync;\");"
 
 let pp_copy_kind = function
-  | CpAsync    -> "cp.async"
-  | TmaLoad    -> "tma.load"
+  | CpAsync -> "cp.async"
+  | TmaLoad -> "tma.load"
   | TmaMulticast -> "tma.multicast"
-  | RegToSmem  -> "reg→smem"
-  | SmemToReg  -> "smem→reg"
+  | RegToSmem -> "reg→smem"
+  | SmemToReg -> "smem→reg"
 
 let pp_mma_kind = function
-  | Sm80Mma      -> "mma.sync (SM80)"
-  | Sm90Wgmma    -> "wgmma (SM90)"
+  | Sm80Mma -> "mma.sync (SM80)"
+  | Sm90Wgmma -> "wgmma (SM90)"
   | Sm100Tcgen05 -> "tcgen05.mma (SM100)"
 
 let pp_tensor_name (Tensor t) = t.tensor_name
@@ -155,13 +150,10 @@ let pp_op = function
     Printf.sprintf "smem_desc %s = make_smem_desc(%s, ld=%d, st=%d)"
       desc_var.var_name (pp_expr ptr_expr) leading_dim stride
 
-(* ------------------------------------------------------------------ *)
-(* Statements                                                          *)
-(* ------------------------------------------------------------------ *)
-
 let rec pp_stmt ?(depth=0) stmt =
   let ind = indent depth in
   match stmt with
+  | SEmpty -> Printf.sprintf "%s// (empty)" ind
   | SLet (v, e) ->
     Printf.sprintf "%slet %s : %s = %s"
       ind v.var_name (pp_packed_scalar v.var_type) (pp_packed_expr e)
@@ -223,11 +215,6 @@ let rec pp_stmt ?(depth=0) stmt =
   | SSeq stmts ->
     List.map stmts ~f:(pp_stmt ~depth)
     |> String.concat ~sep:"\n"
-  | SEmpty -> Printf.sprintf "%s// (empty)" ind
-
-(* ------------------------------------------------------------------ *)
-(* Helper functions                                                    *)
-(* ------------------------------------------------------------------ *)
 
 let pp_helper (h : helper_func) : string =
   let params = List.map h.hf_params ~f:(fun v ->
@@ -241,10 +228,6 @@ let pp_helper (h : helper_func) : string =
     h.hf_name
     params
     body
-
-(* ------------------------------------------------------------------ *)
-(* Top-level kernel IR                                                 *)
-(* ------------------------------------------------------------------ *)
 
 let pp_param (p : param) : string =
   let (Tensor t) = p.param_tensor in

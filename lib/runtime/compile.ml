@@ -1,21 +1,23 @@
 open Base
 open Stdio
+open Tesserae_kernel
+open Tesserae_backend
 
 type result = {
   kernel_name : string;
-  source      : string;
-  ptx         : string option;
+  source : string;
+  ptx : string option;
   duration_ms : float;
 }
 
 type compile_error =
-  | LowerError  of Lower.error
-  | NvrtcError  of string
+  | LowerError of Lower.error
+  | NvrtcError of string
   | LaunchError of string
 
 let pp_error fmt = function
-  | LowerError  e -> Stdlib.Format.fprintf fmt "LowerError: %a"  Lower.pp_error e
-  | NvrtcError  s -> Stdlib.Format.fprintf fmt "NvrtcError: %s"  s
+  | LowerError e -> Stdlib.Format.fprintf fmt "LowerError: %a"  Lower.pp_error e
+  | NvrtcError s -> Stdlib.Format.fprintf fmt "NvrtcError: %s"  s
   | LaunchError s -> Stdlib.Format.fprintf fmt "LaunchError: %s" s
 
 let pp_result fmt r =

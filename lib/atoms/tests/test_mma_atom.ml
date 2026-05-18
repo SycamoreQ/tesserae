@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_atoms
 
 let test_shape_sm80 () =
   let a = Mma_atom.sm80_16x8x16_f32f16f16f32

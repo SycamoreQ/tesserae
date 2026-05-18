@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_core
 
 let t_int n = Modes.Int n
 let t_tup ts = Modes.Tuple ts
@@ -28,7 +28,6 @@ let test_depth_nested () =
   Alcotest.(check int) "nested depth" 2
     (Modes.depth (t_tup [t_int 2; t_tup [t_int 3; t_int 4]]))
 
-(* --- rank --- *)
 let test_rank_leaf () =
   Alcotest.(check int) "leaf rank" 1 (Modes.rank (t_int 5))
 
@@ -36,7 +35,6 @@ let test_rank_tuple () =
   Alcotest.(check int) "tuple rank" 3
     (Modes.rank (t_tup [t_int 2; t_int 3; t_int 4]))
 
-(* --- flatten --- *)
 let test_flatten_leaf () =
   Alcotest.(check (list int)) "flatten leaf" [7] (Modes.flatten (t_int 7))
 
@@ -44,7 +42,6 @@ let test_flatten_nested () =
   Alcotest.(check (list int)) "flatten nested" [2; 3; 4]
     (Modes.flatten (t_tup [t_int 2; t_tup [t_int 3; t_int 4]]))
 
-(* --- compatible --- *)
 let test_compatible_int_int () =
   Alcotest.(check bool) "int-int compat" true
     (Modes.compatible (t_int 4) (t_int 1))
@@ -85,7 +82,6 @@ let test_pp_nested () =
     (t_tup [t_int 2; t_tup [t_int 3; t_int 4]]) in
   Alcotest.(check string) "pp nested" "(2, (3, 4))" s
 
-(* --- runner --- *)
 let () =
   Alcotest.run "Mode" [
     "size",  [ Alcotest.test_case "leaf"   `Quick test_size_leaf

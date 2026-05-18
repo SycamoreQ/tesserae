@@ -3,10 +3,9 @@ open Tesserae_atoms
 open Tesserae_pipeline
 open Tesserae_kernel
 open Tesserae_tirix
+open Tirix
+open Tesserae_backend
 
-(* ------------------------------------------------------------------ *)
-(* helpers                                                             *)
-(* ------------------------------------------------------------------ *)
 
 let ampere_kernel () =
   Kernel_ast.make
@@ -46,8 +45,8 @@ let blackwell_kernel () =
 
 let lower_and_emit k =
   let (Lower.Pack desc) = Lower.lower_exn k in
-  let tir = Kernel_desc_to_tir.lower desc in
-  Tir_emit.emit tir
+  let tirix = Desc_to_tirix.lower desc in
+  Tirix_emit.emit tirix
 
 let contains sub str =
   let n = String.length sub and m = String.length str in
@@ -56,86 +55,79 @@ let contains sub str =
     if String.sub str i n = sub then found := true
   done; !found
 
-(* ------------------------------------------------------------------ *)
-(* emit_scalar_ty                                                      *)
-(* ------------------------------------------------------------------ *)
 
 let test_scalar_u8 () =
   Alcotest.(check string) "u8" "uint8_t"
-    (Tir_emit.emit_scalar_ty Tir.U8)
+    (Tirix_emit.emit_scalar_ty Tirix.U8)
 
 let test_scalar_s32 () =
   Alcotest.(check string) "s32" "int32_t"
-    (Tir_emit.emit_scalar_ty Tir.S32)
+    (Tirix_emit.emit_scalar_ty Tirix.S32)
 
 let test_scalar_f16 () =
   Alcotest.(check string) "f16" "__half"
-    (Tir_emit.emit_scalar_ty Tir.F16)
+    (Tirix_emit.emit_scalar_ty Tirix.F16)
 
 let test_scalar_f32 () =
   Alcotest.(check string) "f32" "float"
-    (Tir_emit.emit_scalar_ty Tir.F32)
+    (Tirix_emit.emit_scalar_ty Tirix.F32)
 
 let test_scalar_bf16 () =
   Alcotest.(check string) "bf16" "__nv_bfloat16"
-    (Tir_emit.emit_scalar_ty Tir.BF16)
+    (Tirix_emit.emit_scalar_ty Tirix.BF16)
 
 let test_scalar_bool () =
   Alcotest.(check string) "bool" "bool"
-    (Tir_emit.emit_scalar_ty Tir.Bool)
-
-(* ------------------------------------------------------------------ *)
-(* emit_expr                                                           *)
-(* ------------------------------------------------------------------ *)
+    (Tirix_emit.emit_scalar_ty Tirix.Bool)
 
 let test_expr_const_s32 () =
   Alcotest.(check string) "const s32" "42"
-    (Tir_emit.emit_expr (Tir.Const (Tir.S32, 42l)))
+    (Tirix_emit.emit_expr (Tirix.Const (Tirix.S32, 42l)))
 
 let test_expr_const_bool_true () =
   Alcotest.(check string) "true" "true"
-    (Tir_emit.emit_expr (Tir.Const (Tir.Bool, true)))
+    (Tirix_emit.emit_expr (Tirix.Const (Tirix.Bool, true)))
 
 let test_expr_builtin_threadidx () =
   Alcotest.(check string) "threadIdx.x" "threadIdx.x"
-    (Tir_emit.emit_expr (Tir.Builtin (Tir.ThreadIdx Tir.X)))
+    (Tirix_emit.emit_expr (Tirix.Builtin (Tirix.ThreadIdx Tirix.X)))
 
 let test_expr_builtin_warpid () =
   Alcotest.(check string) "warp_id" "(threadIdx.x / 32)"
-    (Tir_emit.emit_expr (Tir.Builtin Tir.WarpId))
+    (Tirix_emit.emit_expr (Tirix.Builtin Tirix.WarpId))
 
 let test_expr_binop_add () =
-  let e = Tir.Binop (Tir.Add,
-    Tir.Const (Tir.S32, 1l),
-    Tir.Const (Tir.S32, 2l)) in
+  let e = Tirix.Binop (Tirix.Add,
+    Tirix.Const (Tirix.S32, 1l),
+    Tirix.Const (Tirix.S32, 2l)) in
   Alcotest.(check string) "add" "(1 + 2)"
-    (Tir_emit.emit_expr e)
+    (Tirix_emit.emit_expr e)
 
 let test_expr_binop_logical_and () =
-  let e = Tir.Binop (Tir.And,
-    Tir.Const (Tir.Bool, true),
-    Tir.Const (Tir.Bool, false)) in
+  let e = Tirix.Binop (Tirix.And,
+    Tirix.Const (Tirix.Bool, true),
+    Tirix.Const (Tirix.Bool, false)) in
   Alcotest.(check bool) "logical and has &&" true
-    (contains "&&" (Tir_emit.emit_expr e))
+    (contains "&&" (Tirix_emit.emit_expr e))
 
 let test_expr_binop_bitand_not_logical () =
-  let e = Tir.Binop (Tir.BitAnd,
-    Tir.Const (Tir.U32, 0xffl),
-    Tir.Const (Tir.U32, 0x0fl)) in
-  let s = Tir_emit.emit_expr e in
+  let e = Tirix.Binop (Tirix.BitAnd,
+    Tirix.Const (Tirix.U32, 0xffl),
+    Tirix.Const (Tirix.U32, 0x0fl)) in
+  let s = Tirix_emit.emit_expr e in
   Alcotest.(check bool) "bitand has single &" true (contains "&" s);
   Alcotest.(check bool) "bitand not &&" false (contains "&&" s)
 
 let test_expr_cast () =
-  let e = Tir.Cast (Tir.U32, Tir.Const (Tir.S32, 42l)) in
+  let e = Tirix.Cast (Tirix.U32, Tirix.Const (Tirix.S32, 42l)) in
   Alcotest.(check bool) "cast has type" true
-    (contains "uint32_t" (Tir_emit.emit_expr e))
+    (contains "uint32_t" (Tirix_emit.emit_expr e))
 
 let test_expr_addr_conv () =
-  let e = Tir.AddrConv (Tir.GenericToShared,
-    Tir.Const (Tir.U64, 0L)) in
+  let e = Tirix.AddrConv (Tirix.GenericToShared,
+    Tirix.Const (Tirix.U64, 0L)) in
   Alcotest.(check bool) "addr conv" true
-    (contains "__cvta_generic_to_shared" (Tir_emit.emit_expr e))
+    (contains "__cvta_generic_to_shared" (Tirix_emit.emit_expr e))
 
 (* ------------------------------------------------------------------ *)
 (* emit_barrier                                                        *)
@@ -144,54 +136,50 @@ let test_expr_addr_conv () =
 let test_barrier_cta_sync () =
   Alcotest.(check bool) "__syncthreads" true
     (contains "__syncthreads"
-      (Tir_emit.emit_barrier Tir.CtaSync))
+      (Tirix_emit.emit_barrier Tirix.CtaSync))
 
 let test_barrier_mbar_init () =
-  let v = { Tir.var_name="full_mbar"; var_id=0
-          ; var_type=Tir.Scalar Tir.U64; var_mutable=false } in
+  let v = { Tirix.var_name="full_mbar"; var_id=0
+          ; var_type=Tirix.Scalar Tirix.U64; var_mutable=false } in
   Alcotest.(check bool) "mbarrier.init" true
     (contains "mbarrier.init"
-      (Tir_emit.emit_barrier (Tir.MbarInit { mbar=v; count=1 })))
+      (Tirix_emit.emit_barrier (Tirix.MbarInit { mbar=v; count=1 })))
 
 let test_barrier_cp_async_wait () =
   Alcotest.(check bool) "cp.async.wait_all" true
     (contains "cp.async.wait_all"
-      (Tir_emit.emit_barrier Tir.CpAsyncWaitAll))
+      (Tirix_emit.emit_barrier Tirix.CpAsyncWaitAll))
 
 let test_barrier_cluster_arrive () =
   Alcotest.(check bool) "cluster arrive" true
     (contains "barrier.cluster.arrive"
-      (Tir_emit.emit_barrier Tir.ClusterArrive))
-
-(* ------------------------------------------------------------------ *)
-(* emit_stmt                                                           *)
-(* ------------------------------------------------------------------ *)
+      (Tirix_emit.emit_barrier Tirix.ClusterArrive))
 
 let test_stmt_slet () =
-  let v = { Tir.var_name="x"; var_id=0
-          ; var_type=Tir.Scalar Tir.S32; var_mutable=false } in
-  let s = Tir_emit.emit_stmt
-    (Tir.SLet (v, Tir.Expr (Tir.Const (Tir.S32, 0l)))) in
+  let v = { Tirix.var_name="x"; var_id=0
+          ; var_type=Tirix.Scalar Tirix.S32; var_mutable=false } in
+  let s = Tirix_emit.emit_stmt
+    (Tirix.SLet (v, Tirix.Expr (Tirix.Const (Tirix.S32, 0l)))) in
   Alcotest.(check bool) "const decl" true (contains "const" s);
   Alcotest.(check bool) "var name"   true (contains "x" s)
 
 let test_stmt_sletmut () =
-  let v = { Tir.var_name="y"; var_id=0
-          ; var_type=Tir.Scalar Tir.S32; var_mutable=true } in
-  let s = Tir_emit.emit_stmt
-    (Tir.SLetMut (v, Tir.Expr (Tir.Const (Tir.S32, 1l)))) in
+  let v = { Tirix.var_name="y"; var_id=0
+          ; var_type=Tirix.Scalar Tirix.S32; var_mutable=true } in
+  let s = Tirix_emit.emit_stmt
+    (Tirix.SLetMut (v, Tirix.Expr (Tirix.Const (Tirix.S32, 1l)))) in
   Alcotest.(check bool) "no const" false (contains "const" s);
   Alcotest.(check bool) "var name"  true  (contains "y" s)
 
 let test_stmt_sfor () =
-  let v = { Tir.var_name="i"; var_id=0
-          ; var_type=Tir.Scalar Tir.S32; var_mutable=true } in
-  let s = Tir_emit.emit_stmt (Tir.SFor {
+  let v = { Tirix.var_name="i"; var_id=0
+          ; var_type=Tirix.Scalar Tirix.S32; var_mutable=true } in
+  let s = Tirix_emit.emit_stmt (Tirix.SFor {
     var    = v;
-    start  = Tir.Const (Tir.S32, 0l);
-    stop   = Tir.Const (Tir.S32, 4l);
-    step   = Tir.Const (Tir.S32, 1l);
-    dir    = Tir.Upto;
+    start  = Tirix.Const (Tirix.S32, 0l);
+    stop   = Tirix.Const (Tirix.S32, 4l);
+    step   = Tirix.Const (Tirix.S32, 1l);
+    dir    = Tirix.Upto;
     unroll = false;
     body   = [];
   }) in
@@ -199,14 +187,14 @@ let test_stmt_sfor () =
   Alcotest.(check bool) "var i"    true (contains "i" s)
 
 let test_stmt_sfor_unroll () =
-  let v = { Tir.var_name="i"; var_id=0
-          ; var_type=Tir.Scalar Tir.S32; var_mutable=true } in
-  let s = Tir_emit.emit_stmt (Tir.SFor {
+  let v = { Tirix.var_name="i"; var_id=0
+          ; var_type=Tirix.Scalar Tirix.S32; var_mutable=true } in
+  let s = Tirix_emit.emit_stmt (Tirix.SFor {
     var    = v;
-    start  = Tir.Const (Tir.S32, 0l);
-    stop   = Tir.Const (Tir.S32, 4l);
-    step   = Tir.Const (Tir.S32, 1l);
-    dir    = Tir.Upto;
+    start  = Tirix.Const (Tirix.S32, 0l);
+    stop   = Tirix.Const (Tirix.S32, 4l);
+    step   = Tirix.Const (Tirix.S32, 1l);
+    dir    = Tirix.Upto;
     unroll = true;
     body   = [];
   }) in
@@ -214,12 +202,12 @@ let test_stmt_sfor_unroll () =
     (contains "#pragma unroll" s)
 
 let test_stmt_sif () =
-  let s = Tir_emit.emit_stmt
-    (Tir.SIf (Tir.Const (Tir.Bool, true), [], [])) in
+  let s = Tirix_emit.emit_stmt
+    (Tirix.SIf (Tirix.Const (Tirix.Bool, true), [], [])) in
   Alcotest.(check bool) "if stmt" true (contains "if" s)
 
 let test_stmt_pipeline () =
-  let s = Tir_emit.emit_stmt (Tir.SPipeline {
+  let s = Tirix_emit.emit_stmt (Tirix.SPipeline {
     stages   = 4;
     prologue = [];
     mainloop = [];
@@ -229,14 +217,11 @@ let test_stmt_pipeline () =
     (contains "pipeline" s)
 
 let test_stmt_warp_group_producer () =
-  let s = Tir_emit.emit_stmt
-    (Tir.SWarpGroup (Cluster.Producer, [])) in
+  let s = Tirix_emit.emit_stmt
+    (Tirix.SWarpGroup (Cluster.Producer, [])) in
   Alcotest.(check bool) "producer comment" true
     (contains "producer" s)
 
-(* ------------------------------------------------------------------ *)
-(* emit_shared_storage                                                 *)
-(* ------------------------------------------------------------------ *)
 
 let test_shared_storage_struct () =
   let out = lower_and_emit (ampere_kernel ()) in
@@ -262,10 +247,6 @@ let test_shared_storage_tmem_blackwell () =
   let out = lower_and_emit (blackwell_kernel ()) in
   Alcotest.(check bool) "tmem_addr" true
     (contains "tmem_addr" out.Backend_cute.shared_storage)
-
-(* ------------------------------------------------------------------ *)
-(* emit_kernel_func                                                    *)
-(* ------------------------------------------------------------------ *)
 
 let test_kernel_func_global () =
   let out = lower_and_emit (ampere_kernel ()) in
@@ -297,9 +278,6 @@ let test_kernel_func_tmem_alloc_blackwell () =
   Alcotest.(check bool) "tcgen05.alloc" true
     (contains "tcgen05.alloc" out.Backend_cute.kernel_func)
 
-(* ------------------------------------------------------------------ *)
-(* emit_host_launcher                                                  *)
-(* ------------------------------------------------------------------ *)
 
 let test_host_launcher_dim3 () =
   let out = lower_and_emit (ampere_kernel ()) in
@@ -350,12 +328,8 @@ let test_emit_sections_nonempty () =
   Alcotest.(check bool) "launcher" true
     (String.length out.Backend_cute.host_launcher > 0)
 
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
-
 let () =
-  Alcotest.run "Tir_emit" [
+  Alcotest.run "Tirix_emit" [
     "scalar",   [ Alcotest.test_case "u8"        `Quick test_scalar_u8
                 ; Alcotest.test_case "s32"       `Quick test_scalar_s32
                 ; Alcotest.test_case "f16"       `Quick test_scalar_f16

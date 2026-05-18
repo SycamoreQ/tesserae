@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_runtime
+open Tesserae_kernel
 
 (* A minimal valid CUDA kernel for testing nvrtc compilation *)
 let trivial_source = {|

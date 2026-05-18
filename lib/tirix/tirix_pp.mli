@@ -4,6 +4,16 @@
 
 open Tirix
 
+val pp_arith_op : Arith.t -> string
+
+val pp_cmp_op : Cmp.t -> string
+
+val pp_logic_op : Logic.t -> string
+
+val pp_bitwise_op : Bitwise.t -> string
+
+val pp_unop : Unop.t -> string
+
 (** [pp_expr e] pretty-prints an expression. *)
 val pp_expr : _ expr -> string
 
@@ -23,7 +33,7 @@ val pp_stmt : ?depth:int -> stmt -> string
 val pp_helper : helper_func -> string
 
 (** [pp_tir k] pretty-prints the full kernel IR. *)
-val pp_tirix : tir -> string
+val pp_tirix : tirix -> string
 
 (** [pp_scalar_ty t] returns the C++ type string for a scalar type. *)
 val pp_scalar_ty : _ scalar_ty -> string

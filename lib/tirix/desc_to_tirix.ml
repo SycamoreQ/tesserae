@@ -242,7 +242,7 @@ let construct_producer_body
   let b_tensor = make_global_tensor "B" (elem_type_of desc) in
   let let_stage =
     SLet (stage_var,
-      Expr (Binop (Mod, Var k_var, i32 depth)))
+      Expr (Arith (Mod, Var k_var, i32 depth)))
   in
   let copy_ops = match is_tma desc, is_blackwell desc with
     | true, true ->
@@ -331,12 +331,12 @@ let construct_consumer_body
     | Kernel_desc.Blackwell -> Sm100Tcgen05
   in
   let let_stage =
-    SLet (stage_var, Expr (Binop (Mod, Var k_var, i32 depth)))
+    SLet (stage_var, Expr (Arith (Mod, Var k_var, i32 depth)))
   in
   let let_phase =
     SLet (phase_var,
-      Expr (Binop (Mod,
-        Binop (Div, Var k_var, i32 depth),
+      Expr (Arith (Mod,
+        Arith (Div, Var k_var, i32 depth),
         i32 2)))
   in
   let wait_op = if is_tma desc then
@@ -401,10 +401,10 @@ let construct_epilogue_body
     let c   = make_global_tensor "C"   Elemtype.Float32 in
     SWarpGroup (Cluster.Epilogue, [
       SOp (Mma {
-        mma_kind    = Sm80Mma;
-        tensor_a    = acc;
-        tensor_b    = acc;
-        tensor_c    = c;
+        mma_kind = Sm80Mma;
+        tensor_a = acc;
+        tensor_b = acc;
+        tensor_c = c;
         smem_desc_a = None;
         smem_desc_b = None;
         accum_flag  = false;
@@ -436,9 +436,9 @@ let construct_mbar_init
       ];
     } in
     [ SIf (
-        Binop (And,
-          Binop (Eq, Var warp_id, i32 0),
-          Binop (Eq, Var lane_id, i32 0)),
+        Logic (And,
+          Cmp (Eq, Var warp_id, i32 0),
+          Cmp (Eq, Var lane_id, i32 0)),
         [ init_loop ],
         []
       )
@@ -464,10 +464,10 @@ let tmem_dealloc_op
 
 
 let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
-  let tensors  = construct_smem_tensors desc in
-  let vars     = construct_vars desc in
-  let _params   = construct_params desc in
-  let _helpers  = construct_helpers desc in
+  let tensors = construct_smem_tensors desc in
+  let vars = construct_vars desc in
+  let params = construct_params desc in
+  let helpers  = construct_helpers desc in
   let mbar_init = construct_mbar_init desc vars in
   let producer = construct_producer_body desc vars tensors in
   let consumer = construct_consumer_body desc vars tensors in
@@ -479,9 +479,9 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
   let cons_warp = Option.value ~default:1
     (Cluster.consumer_warp desc.Kernel_desc.cluster) in
   let warp_dispatch =
-    SIf (Binop (Eq, Var warp_id, i32 prod_warp),
+    SIf (Cmp (Eq, Var warp_id, i32 prod_warp),
       [ producer ],
-      [ SIf (Binop (Eq, Var warp_id, i32 cons_warp),
+      [ SIf (Cmp (Eq, Var warp_id, i32 cons_warp),
           [ consumer ],
           [ epilogue ]) ])
   in
@@ -489,7 +489,7 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
     SLet (v, Expr (Const (S32, 0l)))) in
   let alloc   = Option.to_list (tmem_alloc_op   desc vars) in
   let dealloc = Option.to_list (tmem_dealloc_op desc vars) in
-  let _body =
+  let body =
     var_decls
     @ alloc
     @ mbar_init
@@ -500,9 +500,12 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
   ; family = desc.Kernel_desc.family
   ; params
   ; tensors
+  ; bm = desc.Kernel_desc.bm
+  ; bn = desc.Kernel_desc.bn
+  ; bk = desc.Kernel_desc.bk
   ; smem_bytes = Kernel_desc.smem_bytes desc
   ; cluster = desc.Kernel_desc.cluster
-  ; pipeline_depth = 3
+  ; pipeline_depth = 4
   ; body
   ; helpers
   }

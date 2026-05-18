@@ -1,13 +1,8 @@
 open Tesserae_core
-open Tesserae_atoms
 open Tesserae_pipeline
 open Tesserae_kernel
 open Tesserae_tirix
 open Tirix
-
-(* ------------------------------------------------------------------ *)
-(* helpers                                                             *)
-(* ------------------------------------------------------------------ *)
 
 let ampere_kernel () =
   Kernel_ast.make
@@ -23,7 +18,7 @@ let ampere_kernel () =
 
 let lower_ampere () =
   let (Lower.Pack desc) = Lower.lower_exn (ampere_kernel ()) in
-  Kernel_desc_to_tir.lower desc
+  Desc_to_tirix.lower desc
 
 let mk_var name ty =
   { var_name    = name
@@ -37,7 +32,11 @@ let mk_tir_minimal () =
   ; family     = Kernel_desc.Ampere
   ; params     = []
   ; tensors    = []
+  ; bm = 128
+  ; bn = 128
+  ; bk = 32
   ; smem_bytes = 0
+  ;pipeline_depth = 4
   ; cluster    = Cluster.make { Cluster.x=1; y=1; z=1 } 4
       [ (0, Cluster.Producer); (1, Cluster.Consumer)
       ; (2, Cluster.Epilogue); (3, Cluster.Epilogue) ]
@@ -45,19 +44,16 @@ let mk_tir_minimal () =
   ; helpers    = []
   }
 
-(* ------------------------------------------------------------------ *)
-(* valid IR — should pass                                              *)
-(* ------------------------------------------------------------------ *)
 
 let test_valid_lowered () =
   let tir = lower_ampere () in
   Alcotest.(check bool) "valid ampere" true
-    (Result.is_ok (Tir_verify.verify tir))
+    (Result.is_ok (Tirix_verify.verify tir))
 
 let test_valid_empty_body () =
   let tir = mk_tir_minimal () in
   Alcotest.(check bool) "empty body ok" true
-    (Result.is_ok (Tir_verify.verify tir))
+    (Result.is_ok (Tirix_verify.verify tir))
 
 let test_valid_slet_then_use () =
   let v = mk_var "x" S32 in
@@ -66,7 +62,7 @@ let test_valid_slet_then_use () =
     SAssign (v, Expr (Var v));
   ]} in
   Alcotest.(check bool) "let then use ok" true
-    (Result.is_ok (Tir_verify.verify tir))
+    (Result.is_ok (Tirix_verify.verify tir))
 
 let test_valid_pipeline_stages () =
   let tir = { (mk_tir_minimal ()) with body = [
@@ -78,16 +74,12 @@ let test_valid_pipeline_stages () =
     }
   ]} in
   Alcotest.(check bool) "pipeline 4 stages ok" true
-    (Result.is_ok (Tir_verify.verify tir))
+    (Result.is_ok (Tirix_verify.verify tir))
 
 let test_valid_warp_group_roles () =
   let tir = lower_ampere () in
   Alcotest.(check bool) "warp roles consistent" true
-    (Result.is_ok (Tir_verify.verify tir))
-
-(* ------------------------------------------------------------------ *)
-(* undefined variable — should fail                                    *)
-(* ------------------------------------------------------------------ *)
+    (Result.is_ok (Tirix_verify.verify tir))
 
 let test_undefined_var_in_assign () =
   let v = mk_var "ghost" S32 in
@@ -95,7 +87,7 @@ let test_undefined_var_in_assign () =
     SAssign (v, Expr (Const (S32, 0l)));
   ]} in
   Alcotest.(check bool) "undefined var caught" true
-    (Result.is_error (Tir_verify.verify tir))
+    (Result.is_error (Tirix_verify.verify tir))
 
 let test_undefined_var_in_expr () =
   let v   = mk_var "declared" S32 in
@@ -104,7 +96,7 @@ let test_undefined_var_in_expr () =
     SLet (v, Expr (Var bad));
   ]} in
   Alcotest.(check bool) "undefined in expr caught" true
-    (Result.is_error (Tir_verify.verify tir))
+    (Result.is_error (Tirix_verify.verify tir))
 
 let test_use_before_declare () =
   let v = mk_var "late" S32 in
@@ -113,29 +105,21 @@ let test_use_before_declare () =
     SLet (v, Expr (Const (S32, 0l)));
   ]} in
   Alcotest.(check bool) "use before declare caught" true
-    (Result.is_error (Tir_verify.verify tir))
-
-(* ------------------------------------------------------------------ *)
-(* pipeline structural errors — should fail                            *)
-(* ------------------------------------------------------------------ *)
+    (Result.is_error (Tirix_verify.verify tir))
 
 let test_pipeline_zero_stages () =
   let tir = { (mk_tir_minimal ()) with body = [
     SPipeline { stages = 0; prologue = []; mainloop = []; epilogue = [] }
   ]} in
   Alcotest.(check bool) "zero stages caught" true
-    (Result.is_error (Tir_verify.verify tir))
+    (Result.is_error (Tirix_verify.verify tir))
 
 let test_pipeline_negative_stages () =
   let tir = { (mk_tir_minimal ()) with body = [
     SPipeline { stages = -1; prologue = []; mainloop = []; epilogue = [] }
   ]} in
   Alcotest.(check bool) "negative stages caught" true
-    (Result.is_error (Tir_verify.verify tir))
-
-(* ------------------------------------------------------------------ *)
-(* for loop structural errors — should fail                            *)
-(* ------------------------------------------------------------------ *)
+    (Result.is_error (Tirix_verify.verify tir))
 
 let test_for_zero_step () =
   let v = mk_var "i" S32 in
@@ -152,11 +136,7 @@ let test_for_zero_step () =
     }
   ]} in
   Alcotest.(check bool) "zero step caught" true
-    (Result.is_error (Tir_verify.verify tir))
-
-(* ------------------------------------------------------------------ *)
-(* tensor reference errors — should fail                               *)
-(* ------------------------------------------------------------------ *)
+    (Result.is_error (Tirix_verify.verify tir))
 
 let test_copy_unknown_src_tensor () =
   let ghost = Tensor {
@@ -185,22 +165,15 @@ let test_copy_unknown_src_tensor () =
     })
   ]} in
   Alcotest.(check bool) "unknown src tensor caught" true
-    (Result.is_error (Tir_verify.verify tir))
+    (Result.is_error (Tirix_verify.verify tir))
 
-(* ------------------------------------------------------------------ *)
-(* warp role errors — should fail                                      *)
-(* ------------------------------------------------------------------ *)
 
 let test_scheduler_warp_no_scheduler_role () =
   let tir = { (mk_tir_minimal ()) with body = [
     SWarpGroup (Cluster.Scheduler, [SEmpty])
   ]} in
   Alcotest.(check bool) "scheduler warp without role caught" true
-    (Result.is_error (Tir_verify.verify tir))
-
-(* ------------------------------------------------------------------ *)
-(* error accumulation — all errors reported                            *)
-(* ------------------------------------------------------------------ *)
+    (Result.is_error (Tirix_verify.verify tir))
 
 let test_multiple_errors_reported () =
   let v1 = mk_var "ghost1" S32 in
@@ -210,15 +183,12 @@ let test_multiple_errors_reported () =
     SAssign (v2, Expr (Const (S32, 1l)));
     SPipeline { stages = 0; prologue = []; mainloop = []; epilogue = [] };
   ]} in
-  match Tir_verify.verify tir with
+  match Tirix_verify.verify tir with
   | Ok _ -> Alcotest.fail "expected errors"
   | Error errs ->
     Alcotest.(check bool) "multiple errors" true
       (List.length errs >= 2)
 
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Tir_verify" [

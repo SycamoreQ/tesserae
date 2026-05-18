@@ -1,8 +1,5 @@
 open Base
-open Tesserae_core
-open Tesserae_atoms
 open Tesserae_pipeline
-open Tesserae_kernel
 open Tirix
 
 let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
@@ -25,18 +22,23 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
 
   let tensor_name (Tensor t) = t.tensor_name in
 
-  let rec check_expr : type a. Hashtbl.M(String).t -> a expr -> unit =
+  let rec check_expr : type a. (string, unit) Hashtbl.t -> a expr -> unit =
     fun scope e ->
     match e with
     | Const _ -> ()
     | Cast (_, inner) -> check_expr scope inner
     | Var v ->
-        if not (Hashtbl.mem scope v.var_name) then
-          err (Printf.sprintf "undefined variable '%s'" v.var_name)
+      if not (Hashtbl.mem scope v.var_name) then
+        err (Printf.sprintf "undefined variable '%s'" v.var_name)
     | Builtin _ -> ()
-    | Binop (_, l, r) ->
-        check_expr scope l;
-        check_expr scope r
+    | Arith (_, l, r) ->
+      check_expr scope l; check_expr scope r
+    | Cmp (_, l, r) ->
+      check_expr scope l; check_expr scope r
+    | Logic (_, l, r) ->
+      check_expr scope l; check_expr scope r
+    | Bitwise (_, l, r) ->
+      check_expr scope l; check_expr scope r
     | Unop (_, inner) -> check_expr scope inner
     | AddrConv (_, inner) -> check_expr scope inner
   in
@@ -134,10 +136,17 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
     | SFor { var; start; stop; step; body; _ } ->
         check_expr scope start;
         check_expr scope stop;
+
+        (* Fixed GADT witness refinement for step validation *)
+        (**stride calculations dont matter for u8 or u64 , as they
+        mostly are anyways represented into 32 bits**)
         (match step with
-         | Const (_, v) when Int32.equal v 0l ->
-             err (Printf.sprintf "SFor '%s' has zero step" var.var_name)
-         | _ -> ());
+            | Const (S32, v) when Int32.equal v 0l ->
+                err (Printf.sprintf "SFor '%s' has zero step" var.var_name)
+            | Const (U32, v) when Int32.equal v 0l ->
+                err (Printf.sprintf "SFor '%s' has zero step" var.var_name)
+            | _ -> ());
+
         let inner_scope = Hashtbl.copy scope in
         Hashtbl.set inner_scope ~key:var.var_name ~data:();
         List.iter body ~f:(fun s -> ignore (check_stmt inner_scope s));

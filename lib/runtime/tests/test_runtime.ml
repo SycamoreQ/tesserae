@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_runtime
+open Tesserae_kernel
 
 (* Runtime is the top-level user API.
    Functions needed:
@@ -20,10 +21,6 @@ let small_identity_a () =
 let small_b () =
   Array.init 16 (fun i -> float_of_int (i + 1))
 
-(* ------------------------------------------------------------------ *)
-(* device_info / is_available                                          *)
-(* ------------------------------------------------------------------ *)
-
 let test_is_available () =
   Alcotest.(check bool) "gpu available" true
     (Runtime.is_available ())
@@ -32,10 +29,6 @@ let test_device_info () =
   let s = Runtime.device_info () in
   Alcotest.(check bool) "non-empty" true (String.length s > 0);
   Printf.printf "GPU: %s\n%!" s
-
-(* ------------------------------------------------------------------ *)
-(* run — small matmul                                                  *)
-(* ------------------------------------------------------------------ *)
 
 let test_run_ok () =
   let k = Kernel_ast.make
@@ -71,10 +64,6 @@ let test_run_output_size () =
     ~b:(Array.make (32*128) 1.0) with
   | Ok c  -> Alcotest.(check int) "output size" (128*128) (Array.length c)
   | Error e -> Alcotest.failf "failed: %s" e
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Runtime" [

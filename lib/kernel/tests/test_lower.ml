@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_kernel
+open Tesserae_pipeline
 
 let ampere_kernel () =
   Kernel_ast.make

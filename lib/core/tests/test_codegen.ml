@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_core
 
 let i n    = Modes.Int n
 let tup ts = Modes.Tuple ts
@@ -11,7 +11,7 @@ let contains sub str =
     if String.sub str i n = sub then found := true
   done; !found
 
-(* --- emit_shape --- *)
+
 let test_shape_scalar () =
   Alcotest.(check string) "scalar" "_4"
     (Codegen.emit_shape (i 4))
@@ -24,7 +24,6 @@ let test_shape_nested () =
   Alcotest.(check string) "nested" "Shape<_2,Shape<_3,_4>>"
     (Codegen.emit_shape (tup [i 2; tup [i 3; i 4]]))
 
-(* --- emit_stride --- *)
 let test_stride_scalar () =
   Alcotest.(check string) "scalar" "_1"
     (Codegen.emit_stride (i 1))
@@ -37,7 +36,7 @@ let test_stride_nested () =
   Alcotest.(check string) "nested" "Stride<_1,Stride<_2,_8>>"
     (Codegen.emit_stride (tup [i 1; tup [i 2; i 8]]))
 
-(* --- emit_layout --- *)
+
 let test_layout_simple () =
   Alcotest.(check string) "simple"
     "Layout<Shape<_2,_3>,Stride<_1,_2>>"
@@ -68,21 +67,21 @@ let test_tensor_type_shared () =
     (Codegen.emit_tensor_type Elemtype.Float16 Memspace.Shared
        (lay (i 8) (i 1)))
 
-(* --- emit_make_tensor --- *)
+
 let test_make_tensor () =
   Alcotest.(check string) "make_tensor"
     "make_tensor<float>(ptr_A, Layout<Shape<_2,_3>,Stride<_1,_2>>{})"
     (Codegen.emit_make_tensor "ptr_A" Elemtype.Float32 Memspace.Global
        (lay (tup [i 2; i 3]) (tup [i 1; i 2])))
 
-(* --- emit_smem_decl --- *)
+
 let test_smem_decl () =
   Alcotest.(check string) "smem"
     "__shared__ float smem_A[6];"
     (Codegen.emit_smem_decl "smem_A" Elemtype.Float32
        (lay (tup [i 2; i 3]) (tup [i 1; i 2])))
 
-(* --- emit_include_guard --- *)
+
 let test_include_guard () =
   Alcotest.(check string) "pragma"
     "#pragma once"
@@ -94,7 +93,6 @@ let test_cute_includes () =
   Alcotest.(check bool) "has cute" true
     (contains "tensor.hpp" s)
 
-(* --- runner --- *)
 let () =
   Alcotest.run "Codegen" [
     "shape",   [ Alcotest.test_case "scalar" `Quick test_shape_scalar

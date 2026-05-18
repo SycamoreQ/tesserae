@@ -1,10 +1,9 @@
 open Base
 open Tesserae_tirix
-open Tirix
 open Tesserae_pipeline
 open Tesserae_core
+open Tirix
 open Tesserae_kernel
-open Tesserae_backend
 
 let tirix_is_tma (k : tirix) =
   List.exists k.params ~f:(fun p -> p.param_is_tma)
@@ -22,22 +21,46 @@ let emit_scalar_ty : type a. a scalar_ty -> string = function
 
 let emit_packed_scalar (Scalar s) = emit_scalar_ty s
 
+let emit_arith_op = function
+  | Arith.Add -> "+" | Arith.Sub -> "-" | Arith.Mul -> "*" | Arith.Div -> "/" | Arith.Mod -> "%"
+
+let emit_cmp_op = function
+  | Cmp.Eq  -> "==" | Cmp.Ne -> "!=" | Cmp.Lt -> "<" | Cmp.Le -> "<=" | Cmp.Gt -> ">" | Cmp.Ge -> ">="
+
+let emit_logic_op = function
+  | Logic.And -> "&&" | Logic.Or -> "||"
+
+let emit_bitwise_op = function
+  | Bitwise.BitAnd -> "&" | Bitwise.BitOr -> "|" | Bitwise.BitXor -> "^"
+  | Bitwise.Shl    -> "<<" | Bitwise.Shr -> ">>"
+
+
+let emit_unop = function
+  | Unop.Neg -> "-" | Unop.Not -> "!" | Unop.BitNot -> "~"
+
 let rec emit_expr : type a. a expr -> string = function
-  | Const (U8,   v) -> string_of_int v
-  | Const (U32,  v) -> Printf.sprintf "%luU" v
-  | Const (S32,  v) -> Printf.sprintf "%ld" v
-  | Const (U64,  v) -> Printf.sprintf "%LuULL" v
-  | Const (F16,  v) -> Printf.sprintf "__float2half(%ff)" v
-  | Const (F32,  v) -> Printf.sprintf "%ff" v
+  | Const (U8, v) -> Int.to_string v
+  | Const (U32, v) -> Printf.sprintf "%luU" v
+  | Const (S32, v) -> Printf.sprintf "%ld" v
+  | Const (U64, v) -> Printf.sprintf "%LuULL" v
+  | Const (F16, v) -> Printf.sprintf "__float2half(%ff)" v
+  | Const (F32, v) -> Printf.sprintf "%ff" v
   | Const (BF16, v) -> Printf.sprintf "__float2bfloat16(%ff)" v
   | Const (Bool, v) -> if v then "true" else "false"
-  | Const (Ptr,  v) -> Printf.sprintf "0x%LxULL" v
+  | Const (Ptr, v) -> Printf.sprintf "0x%LxULL" v
   | Cast (ty, e) ->
     Printf.sprintf "((%s)(%s))" (emit_scalar_ty ty) (emit_expr e)
   | Var v -> v.var_name
   | Builtin b -> emit_builtin b
-  | Binop (op, l, r) ->
-    Printf.sprintf "(%s %s %s)" (emit_expr l) (emit_binop op) (emit_expr r)
+
+  | Arith (op, l, r) ->
+    Printf.sprintf "(%s %s %s)" (emit_expr l) (emit_arith_op op) (emit_expr r)
+  | Cmp (op, l, r) ->
+    Printf.sprintf "(%s %s %s)" (emit_expr l) (emit_cmp_op op) (emit_expr r)
+  | Logic (op, l, r) ->
+    Printf.sprintf "(%s %s %s)" (emit_expr l) (emit_logic_op op) (emit_expr r)
+  | Bitwise (op, l, r) ->
+    Printf.sprintf "(%s %s %s)" (emit_expr l) (emit_bitwise_op op) (emit_expr r)
   | Unop (op, e) ->
     Printf.sprintf "(%s%s)" (emit_unop op) (emit_expr e)
   | AddrConv (kind, e) ->
@@ -59,17 +82,6 @@ and emit_builtin = function
     "([](){ uint32_t id; \
      asm volatile(\"mov.u32 %0, %%laneid;\" : \"=r\"(id)); \
      return id; }())"
-
-and emit_binop = function
-  | Add ->  "+"  | Sub ->  "-"  | Mul -> "*" | Div -> "/" | Mod -> "%"
-  | Eq ->   "==" | Ne ->   "!=" | Lt ->  "<" | Le ->  "<="
-  | Gt ->   ">"  | Ge ->   ">="
-  | And ->  "&&" | Or ->   "||"
-  | Shl ->  "<<" | Shr ->  ">>"
-  | BitAnd -> "&"  | BitOr ->  "|"  | BitXor -> "^"
-
-and emit_unop = function
-  | Neg -> "-" | Not -> "!" | BitNot -> "~"
 
 and emit_addr_conv = function
   | GenericToShared -> "__cvta_generic_to_shared"
@@ -479,8 +491,8 @@ let emit_includes (k : tirix) : string =
   ]
 
 let emit (k : tirix) : Backend_cute.output =
-  let includes       = emit_includes k in
-  let helpers        = String.concat ~sep:"\n\n"
+  let includes = emit_includes k in
+  let helpers = String.concat ~sep:"\n\n"
     (List.map k.helpers ~f:emit_helper) in
   let shared_storage = emit_shared_storage k in
   let kernel_func    = emit_kernel_func k in
@@ -488,7 +500,7 @@ let emit (k : tirix) : Backend_cute.output =
   let full_source    = String.concat ~sep:"\n\n"
     [ includes; helpers; shared_storage; kernel_func; host_launcher ]
   in
-  { Backend_cute.filename      = k.name ^ ".cuh"
+  { Backend_cute.filename = k.name ^ ".cuh"
   ; includes
   ; helpers
   ; shared_storage

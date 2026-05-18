@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_runtime
 
 (* Gpu_buffer wraps device memory allocation.
    Functions needed:

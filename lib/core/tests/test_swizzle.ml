@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_core
 
 let test_make_valid () =
   let sw = Swizzle.make 2 4 3 in

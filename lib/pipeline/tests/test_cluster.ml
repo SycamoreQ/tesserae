@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_pipeline
 
 (* Standard 2SM warp-specialized cluster:
    6 warps: 0=producer, 1=consumer, 2-4=epilogue, 5=scheduler *)

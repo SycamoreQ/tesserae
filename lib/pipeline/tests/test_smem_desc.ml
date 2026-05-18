@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_pipeline
+open Tesserae_core
 
 let test_sw_none () =
   let sw = Swizzle.make 0 4 3 in

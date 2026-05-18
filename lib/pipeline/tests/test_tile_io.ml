@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_pipeline
+open Tesserae_core
 
 let cluster_2sm () =
   Cluster.make

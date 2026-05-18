@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_pipeline
 
 (* BM=128, BN=256, BK=64, bf16 (2 bytes), 2SM so B is halved
    tile_bytes = (128 + 128) * 64 * 2 = 32768 bytes *)

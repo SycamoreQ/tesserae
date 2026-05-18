@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_kernel
+open Tesserae_runtime
 
 (* Kernel_launch wraps PTX loading and kernel execution.
    Functions needed:

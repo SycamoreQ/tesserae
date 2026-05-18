@@ -2,7 +2,14 @@
   (name test_tirix_verify)
   (libraries tesserae alcotest))
 
+(test
+  (name test_tirix)
+  (libraries tesserae alcotest))
 
 (test
-  (name test_tirix_emit)
+  (name test_tirix_pp)
+  (libraries tesserae alcotest))
+
+(test
+  (name test_desc_to_tirix)
   (libraries tesserae alcotest))

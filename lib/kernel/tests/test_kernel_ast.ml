@@ -1,11 +1,11 @@
-open Tesserae
+open Tesserae_kernel
 
 let gemm_body () =
-  let a    = Kernel_ast.arg "A" Kernel_ast.F16  Kernel_ast.Global in
-  let b    = Kernel_ast.arg "B" Kernel_ast.F16  Kernel_ast.Global in
-  let c    = Kernel_ast.arg "C" Kernel_ast.F32  Kernel_ast.Global in
-  let sa   = Kernel_ast.smem "smem_A" Kernel_ast.F16 128 64 in
-  let sb   = Kernel_ast.smem "smem_B" Kernel_ast.F16 256 64 in
+  let a  = Kernel_ast.arg "A" Kernel_ast.F16  Kernel_ast.Global in
+  let b  = Kernel_ast.arg "B" Kernel_ast.F16  Kernel_ast.Global in
+  let c  = Kernel_ast.arg "C" Kernel_ast.F32  Kernel_ast.Global in
+  let sa = Kernel_ast.smem "smem_A" Kernel_ast.F16 128 64 in
+  let sb  = Kernel_ast.smem "smem_B" Kernel_ast.F16 256 64 in
   Kernel_ast.Seq [
     Kernel_ast.warp_dispatch [
       ( Kernel_ast.WarpIs 0,

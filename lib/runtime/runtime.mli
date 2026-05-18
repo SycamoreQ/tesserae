@@ -1,3 +1,5 @@
+open Tesserae_kernel
+
 val is_available : unit -> bool
 val device_info  : unit -> string
 val run :

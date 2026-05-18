@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_core
 
 (* helpers *)
 let int n    = Modes.Int n

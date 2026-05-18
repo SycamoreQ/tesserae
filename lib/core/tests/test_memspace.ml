@@ -1,4 +1,4 @@
-open Tesserae
+open Tesserae_core
 
 (* --- name --- *)
 let test_name_global () =

@@ -1,3 +1,7 @@
 (test
   (name test_backend_cute)
   (libraries tesserae alcotest))
+
+(test
+  (name test_tirix_emit)
+  (libraries tesserae alcotest))

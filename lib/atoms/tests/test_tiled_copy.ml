@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_core
+open Tesserae_atoms
 
 let i n    = Modes.Int n
 let lay s d = Layout.make s d

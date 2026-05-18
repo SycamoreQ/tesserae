@@ -1,4 +1,5 @@
-open Tesserae
+open Tesserae_kernel
+open Tesserae_core
 
 let ampere () =
   Kernel_desc.make_ampere
