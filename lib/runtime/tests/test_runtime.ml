@@ -14,13 +14,6 @@ open Tesserae_kernel
    - is_available : unit -> bool
        true iff a CUDA device is present *)
 
-let small_identity_a () =
-  (* 4x4 identity matrix, row major, as flat array *)
-  Array.init 16 (fun i -> if i mod 5 = 0 then 1.0 else 0.0)
-
-let small_b () =
-  Array.init 16 (fun i -> float_of_int (i + 1))
-
 let test_is_available () =
   Alcotest.(check bool) "gpu available" true
     (Runtime.is_available ())
@@ -42,10 +35,11 @@ let test_run_ok () =
           ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
     ~body:(Kernel_ast.Seq []) in
   let result = Runtime.run k
-    ~m:128 ~n:128 ~k:32
-    ~a:(Array.make (128*32) 1.0)
-    ~b:(Array.make (32*128) 1.0) in
-  Alcotest.(check bool) "ok" true (Result.is_ok result)
+      ~m:128 ~n:128 ~k_:32
+      ~a:(Array.make (128 * 32) 1.0)
+      ~b:(Array.make (32 * 128) 1.0)
+    in
+    Alcotest.(check bool) "ok" true (Result.is_ok result)
 
 let test_run_output_size () =
   let k = Kernel_ast.make
@@ -59,11 +53,14 @@ let test_run_output_size () =
           ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
     ~body:(Kernel_ast.Seq []) in
   match Runtime.run k
-    ~m:128 ~n:128 ~k:32
-    ~a:(Array.make (128*32) 1.0)
-    ~b:(Array.make (32*128) 1.0) with
-  | Ok c  -> Alcotest.(check int) "output size" (128*128) (Array.length c)
-  | Error e -> Alcotest.failf "failed: %s" e
+      ~m:128
+      ~n:128
+      ~k_:32
+      ~a:(Array.make (128 * 32) 1.0)
+      ~b:(Array.make (32 * 128) 1.0)
+    with
+    | Ok c    -> Alcotest.(check int) "output size" (128 * 128) (Array.length c)
+    | Error e -> Alcotest.failf "failed: %s" e
 
 let () =
   Alcotest.run "Runtime" [

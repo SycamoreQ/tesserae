@@ -138,8 +138,8 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
         check_expr scope stop;
 
         (* Fixed GADT witness refinement for step validation *)
-        (**stride calculations dont matter for u8 or u64 , as they
-        mostly are anyways represented into 32 bits**)
+        (* stride calculations dont matter for u8 or u64 , as they
+        mostly are anyways represented into 32 bits *)
         (match step with
             | Const (S32, v) when Int32.equal v 0l ->
                 err (Printf.sprintf "SFor '%s' has zero step" var.var_name)

@@ -1,5 +1,5 @@
 open Tesserae_kernel
-open Tesserae_backend
+open Tesserae_runtime
 open Stdio
 
 let ampere () =
@@ -45,10 +45,6 @@ let contains sub str =
     if String.sub str i n = sub then found := true
   done; !found
 
-(* ------------------------------------------------------------------ *)
-(* to_source                                                           *)
-(* ------------------------------------------------------------------ *)
-
 let test_to_source_ok () =
   Alcotest.(check bool) "ok" true
     (Result.is_ok (Compile.to_source (ampere ())))
@@ -71,10 +67,6 @@ let test_to_source_duration () =
   let r = Compile.to_source_exn (ampere ()) in
   Alcotest.(check bool) "duration >= 0" true
     (r.Compile.duration_ms >= 0.0)
-
-(* ------------------------------------------------------------------ *)
-(* source content                                                      *)
-(* ------------------------------------------------------------------ *)
 
 let test_source_pragma () =
   let r = Compile.to_source_exn (ampere ()) in
@@ -101,10 +93,6 @@ let test_source_blackwell_tcgen05 () =
   Alcotest.(check bool) "tcgen05" true
     (contains "tcgen05" r.Compile.source)
 
-(* ------------------------------------------------------------------ *)
-(* to_ptx (stub)                                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_to_ptx_ok () =
   match Compile.to_ptx (ampere ()) with
   | Ok _    -> Alcotest.(check bool) "ok" true true
@@ -122,10 +110,6 @@ let test_to_ptx_has_ptx () =
   | Ok r -> Alcotest.(check bool) "some" true (Option.is_some r.Compile.ptx)
   | Error _ -> Alcotest.fail "expected ok"
 
-(* ------------------------------------------------------------------ *)
-(* write_source                                                        *)
-(* ------------------------------------------------------------------ *)
-
 let test_write_source () =
   let path = "/tmp/tesserae_test_gemm.cuh" in
   Compile.write_source (ampere ()) path;
@@ -133,9 +117,6 @@ let test_write_source () =
   Alcotest.(check bool) "written" true
     (contains "__global__" content)
 
-(* ------------------------------------------------------------------ *)
-(* all three archs                                                     *)
-(* ------------------------------------------------------------------ *)
 
 let test_all_archs () =
   let kernels = [ampere (); hopper (); blackwell ()] in
@@ -145,9 +126,6 @@ let test_all_archs () =
       (String.length r.Compile.source > 0)
   ) kernels
 
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Compile" [

@@ -1,5 +1,4 @@
 open Tesserae_core
-open Tesserae_atoms
 open Tesserae_pipeline
 open Tesserae_kernel
 open Tesserae_tirix
@@ -150,9 +149,9 @@ let test_expr_builtin_threadidx () =
   | _ -> Alcotest.fail "wrong"
 
 let test_expr_binop () =
-  let e = Binop (Add, Const (S32, 1l), Const (S32, 2l)) in
+  let e = Arith (Add, Const (S32, 1l), Const (S32, 2l)) in
   match e with
-  | Binop (Add, _, _) -> Alcotest.(check bool) "binop add" true true
+  | Arith (Add, _, _) -> Alcotest.(check bool) "binop add" true true
   | _ -> Alcotest.fail "wrong"
 
 let test_expr_cast () =

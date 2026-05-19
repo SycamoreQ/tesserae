@@ -3,10 +3,6 @@ open Tesserae_kernel
 open Tesserae_pipeline
 open Tesserae_core
 
-type run_error =
-  | CompileError of string
-  | LaunchError  of string
-
 let is_available () : bool =
   match Kernel_launch.device_info () with
   | _ -> true
@@ -41,27 +37,30 @@ let run (k : Kernel_ast.kernel)
       (* 5. launch *)
       let bm = k.Kernel_ast.tile.Kernel_ast.m in
       let bn = k.Kernel_ast.tile.Kernel_ast.n in
-      let nwarps = Cluster.thread_count
-        (Kernel_desc.make_ampere
-          ~name:"_" ~bm ~bn ~bk:32
-          ~elem:Elemtype.Float16
-          ~m ~n ~k:k_).Kernel_desc.cluster
+      let desc = Kernel_desc.make_ampere
+        ~name:"_" ~bm ~bn ~bk:32
+        ~elem:Elemtype.Float16
+        ~m ~n ~k:k_
       in
+
+      let nwarps = Cluster.thread_count desc.Kernel_desc.cluster in
+      let smem_allocated = Kernel_desc.smem_bytes desc in
       ignore nwarps;
+
       (match (try
-        Kernel_launch.launch func
-          ~grid:((m + bm - 1) / bm, (n + bn - 1) / bn, 1)
-          ~block:(128, 1, 1)
-          ~smem:r.Compile.source |> String.length |> ignore; 0
-          ~args:[ Gpu_buffer.ptr dev_a
-                ; Gpu_buffer.ptr dev_b
-                ; Gpu_buffer.ptr dev_c
-                ; Nativeint.of_int m
-                ; Nativeint.of_int n
-                ; Nativeint.of_int k_ ];
-        Kernel_launch.synchronize ();
-        Ok ()
-        with Failure msg -> Error msg) with
+                Kernel_launch.launch func
+                  ~grid:((m + bm - 1) / bm, (n + bn - 1) / bn, 1)
+                  ~block:(128, 1, 1)
+                  ~smem:smem_allocated
+                  ~args:[ Gpu_buffer.ptr dev_a
+                        ; Gpu_buffer.ptr dev_b
+                        ; Gpu_buffer.ptr dev_c
+                        ; Nativeint.of_int m
+                        ; Nativeint.of_int n
+                        ; Nativeint.of_int k_ ];
+                Kernel_launch.synchronize ();
+                Ok ()
+              with Failure msg -> Error msg) with
       | Error msg ->
         Gpu_buffer.free dev_a;
         Gpu_buffer.free dev_b;

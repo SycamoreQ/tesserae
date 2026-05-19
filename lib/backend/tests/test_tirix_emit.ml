@@ -1,5 +1,3 @@
-open Tesserae_core
-open Tesserae_atoms
 open Tesserae_pipeline
 open Tesserae_kernel
 open Tesserae_tirix
@@ -97,21 +95,21 @@ let test_expr_builtin_warpid () =
     (Tirix_emit.emit_expr (Tirix.Builtin Tirix.WarpId))
 
 let test_expr_binop_add () =
-  let e = Tirix.Binop (Tirix.Add,
+  let e = Arith (Add,
     Tirix.Const (Tirix.S32, 1l),
     Tirix.Const (Tirix.S32, 2l)) in
   Alcotest.(check string) "add" "(1 + 2)"
     (Tirix_emit.emit_expr e)
 
 let test_expr_binop_logical_and () =
-  let e = Tirix.Binop (Tirix.And,
+  let e = Logic (And,
     Tirix.Const (Tirix.Bool, true),
     Tirix.Const (Tirix.Bool, false)) in
   Alcotest.(check bool) "logical and has &&" true
     (contains "&&" (Tirix_emit.emit_expr e))
 
 let test_expr_binop_bitand_not_logical () =
-  let e = Tirix.Binop (Tirix.BitAnd,
+  let e = Bitwise (BitAnd,
     Tirix.Const (Tirix.U32, 0xffl),
     Tirix.Const (Tirix.U32, 0x0fl)) in
   let s = Tirix_emit.emit_expr e in
