@@ -13,3 +13,7 @@
 (test
   (name test_desc_to_tirix)
   (libraries tesserae alcotest))
+
+(test
+  (name test_ast_to_tirix
+  (libraries tesserae alcotest))

@@ -127,7 +127,7 @@ let rec pp_stmt fmt = function
     List.iter body ~f:(fun s ->
       Stdlib.Format.fprintf fmt "  %a\n" pp_stmt s);
     Stdlib.Format.fprintf fmt "}"
-  | Barrier ThreadSync    -> Stdlib.Format.fprintf fmt "syncthreads()"
+  | Barrier ThreadSync  -> Stdlib.Format.fprintf fmt "syncthreads()"
   | Barrier ClusterSync   -> Stdlib.Format.fprintf fmt "cluster_sync()"
   | Barrier (MbarFull v)  -> Stdlib.Format.fprintf fmt "mbar_wait_full(%s)" v
   | Barrier (MbarEmpty v) -> Stdlib.Format.fprintf fmt "mbar_wait_empty(%s)" v
