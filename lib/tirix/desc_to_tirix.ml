@@ -305,10 +305,10 @@ let construct_producer_body
       start  = i32 0;
       stop   = i32 (Layout.size
                 (Layout.make (Modes.Int (desc.Kernel_desc.bk)) (Modes.Int 1)));
-      step   = i32 1;
-      dir    = Upto;
+      step = i32 1;
+      dir = Upto;
       unroll = false;
-      body   = loop_body;
+      body = loop_body;
     }
   ])
 
@@ -347,9 +347,9 @@ let construct_consumer_body
   in
   let mma_op = SOp (Mma {
     mma_kind;
-    tensor_a  = smem_a;
-    tensor_b  = smem_b;
-    tensor_c  = acc;
+    tensor_a = smem_a;
+    tensor_b = smem_b;
+    tensor_c = acc;
     smem_desc_a = None;
     smem_desc_b = None;
     accum_flag = true;
@@ -398,7 +398,7 @@ let construct_epilogue_body
     ])
   | _ ->
     let acc = make_global_tensor "acc" Elemtype.Float32 in
-    let c   = make_global_tensor "C"   Elemtype.Float32 in
+    let c   = make_global_tensor "C" Elemtype.Float32 in
     SWarpGroup (Cluster.Epilogue, [
       SOp (Mma {
         mma_kind = Sm80Mma;
@@ -407,7 +407,7 @@ let construct_epilogue_body
         tensor_c = c;
         smem_desc_a = None;
         smem_desc_b = None;
-        accum_flag  = false;
+        accum_flag = false;
       });
     ])
 

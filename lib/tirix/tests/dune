@@ -15,5 +15,5 @@
   (libraries tesserae alcotest))
 
 (test
-  (name test_ast_to_tirix
+  (name test_ast_to_tirix)
   (libraries tesserae alcotest))

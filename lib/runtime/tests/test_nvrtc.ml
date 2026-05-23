@@ -1,3 +1,5 @@
+open Base
+open Stdio
 open Tesserae_runtime
 open Tesserae_kernel
 
@@ -24,8 +26,21 @@ let ampere_source () =
     ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
           ; ("B", Kernel_ast.F16, Kernel_ast.Global)
           ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
-    ~body:(Kernel_ast.Seq []) in
-  (Compile.to_source_exn k).Compile.source
+    ~body:(Kernel_ast.Seq [])
+  in
+  match Compile.to_source k with
+  | Ok res -> res.Compile.source
+  | Error e ->
+    let msg = Stdlib.Format.asprintf "%a" Compile.pp_error e in
+    Alcotest.failf "Failed to generate ampere source for Nvrtc tests: %s" msg
+
+(* Base-compliant contains helper for local assertions *)
+let contains sub str =
+  let n = String.length sub and m = String.length str in
+  let found = ref false in
+  for i = 0 to m - n do
+    if String.equal (String.sub str ~pos:i ~len:n) sub then found := true
+  done; !found
 
 let test_create_program () =
   let prog = Nvrtc.create_program trivial_source "trivial.cu" in
@@ -42,9 +57,8 @@ let test_compile_trivial () =
   match Nvrtc.compile_source trivial_source ~name:"trivial.cu" ~arch:"sm_80" () with
   | Ok _    -> Alcotest.(check bool) "ok" true true
   | Error e ->
-    Printf.printf "NVRTC error: %s\n%!" e;
+    printf "NVRTC error: %s\n%!" e;
     Alcotest.(check bool) "ok" true false
-
 
 let test_compile_ptx_nonempty () =
   match Nvrtc.compile_source trivial_source
@@ -56,13 +70,6 @@ let test_compile_ptx_contains_kernel () =
   match Nvrtc.compile_source trivial_source
     ~name:"trivial.cu" ~arch:"sm_80" () with
   | Ok ptx ->
-    let contains sub str =
-      let n = String.length sub and m = String.length str in
-      let found = ref false in
-      for i = 0 to m - n do
-        if String.sub str i n = sub then found := true
-      done; !found
-    in
     Alcotest.(check bool) "has .visible" true (contains ".visible" ptx);
     Alcotest.(check bool) "has .entry"   true (contains ".entry"   ptx)
   | Error e -> Alcotest.failf "compile failed: %s" e
@@ -92,9 +99,8 @@ let test_compile_kernel_ampere () =
     Alcotest.(check bool) "ptx non-empty" true (String.length ptx > 0)
   | Error e ->
     (* on machines without GPU/nvrtc, skip gracefully *)
-    Printf.printf "nvrtc not available: %s\n%!" e;
+    printf "nvrtc not available: %s\n%!" e;
     Alcotest.(check bool) "skip" true true
-
 
 let test_compile_with_options () =
   let result = Nvrtc.compile_source trivial_source

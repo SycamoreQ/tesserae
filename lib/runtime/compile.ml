@@ -21,7 +21,9 @@ let pp_error fmt = function
   | LowerError e -> Stdlib.Format.fprintf fmt "LowerError: %a"  Lower.pp_error e
   | NvrtcError s -> Stdlib.Format.fprintf fmt "NvrtcError: %s"  s
   | LaunchError s -> Stdlib.Format.fprintf fmt "LaunchError: %s" s
-  | VerifyError s -> List.iteri s ~f:(fun _ -> Stdlib.Format.fprintf fmt "VerifyError: %s" s)
+  | VerifyError errs ->
+    List.iter errs ~f:(fun s ->
+      Stdlib.Format.fprintf fmt "VerifyError: %s\n" s)
 
 let pp_result fmt r =
   Stdlib.Format.fprintf fmt
@@ -43,7 +45,7 @@ let to_tirix (k : Kernel_ast.kernel)
   match Lower.lower k with
   | Error e -> Error (LowerError e)
   | Ok (Lower.Pack desc) ->
-    let tir = desc_to_tirix.lower desc in
+    let tir = Desc_to_tirix.lower desc in
     match Tirix_verify.verify tir with
     | Error errs -> Error (VerifyError errs)
     | Ok () -> Ok tir
@@ -60,14 +62,16 @@ let to_source (k : Kernel_ast.kernel)
        ; duration_ms  = dt }
 
 
-let to_ast (k: Kernel_ast.kernel) : (result , compile_error) Result.t =
-  match Lower.lower k with
-  | Error e -> Error(LowerError e)
-  | Ok( Lower.Pack desc) ->
-    let tirix = ast_to_tirix.lower desc in
-    match Tirix_verify.verify tirix with
-    | Error errs -> Error (VerifyError errs)
-    | Ok() -> Ok  tirix
+let to_ast (k : Kernel_ast.kernel) : (result, compile_error) Result.t =
+  let tir = Ast_to_tirix.lower k in
+  match Tirix_verify.verify tir with
+  | Error errs -> Error (VerifyError errs)
+  | Ok () ->
+    let (out, dt) = time (fun () -> Tirix_emit.emit tir) in
+    Ok { kernel_name = k.Kernel_ast.name
+       ; source = out.Backend_cute.full_source
+       ; ptx = None
+       ; duration_ms  = dt }
 
 
 
@@ -92,7 +96,7 @@ let to_ptx (k : Kernel_ast.kernel) : (result, compile_error) Result.t =
     | Ok ptx    -> Ok { r with ptx = Some ptx }
   in
 
-  match k.body with
+  match k.Kernel_ast.body with
   | Seq [] -> (
       match to_source k with
       | Error e -> Error e

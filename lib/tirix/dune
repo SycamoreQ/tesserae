@@ -6,4 +6,5 @@
    tirix
    tirix_pp
    tirix_verify
-   desc_to_tirix))
+   desc_to_tirix
+   ast_to_tirix))

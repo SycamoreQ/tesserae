@@ -1,6 +1,13 @@
+open Base
+open Stdio
 open Tesserae_kernel
 open Tesserae_runtime
-open Stdio
+
+let get_ok_or_fail = function
+  | Ok r -> r
+  | Error e ->
+    let msg = Stdlib.Format.asprintf "%a" Compile.pp_error e in
+    Alcotest.failf "Compilation failed unexpectedly: %s" msg
 
 let ampere () =
   Kernel_ast.make
@@ -42,73 +49,90 @@ let contains sub str =
   let n = String.length sub and m = String.length str in
   let found = ref false in
   for i = 0 to m - n do
-    if String.sub str i n = sub then found := true
+    if String.equal (String.sub str ~pos:i ~len:n) sub then found := true
   done; !found
+
 
 let test_to_source_ok () =
   Alcotest.(check bool) "ok" true
     (Result.is_ok (Compile.to_source (ampere ())))
 
 let test_to_source_name () =
-  let r = Compile.to_source_exn (ampere ()) in
+  let r = get_ok_or_fail (Compile.to_source (ampere ())) in
   Alcotest.(check string) "name" "gemm_ampere" r.Compile.kernel_name
 
 let test_to_source_has_source () =
-  let r = Compile.to_source_exn (ampere ()) in
+  let r = get_ok_or_fail (Compile.to_source (ampere ())) in
   Alcotest.(check bool) "non-empty" true
     (String.length r.Compile.source > 0)
 
 let test_to_source_no_ptx () =
-  let r = Compile.to_source_exn (ampere ()) in
+  let r = get_ok_or_fail (Compile.to_source (ampere ())) in
   Alcotest.(check bool) "no ptx" true
     (Option.is_none r.Compile.ptx)
 
 let test_to_source_duration () =
-  let r = Compile.to_source_exn (ampere ()) in
+  let r = get_ok_or_fail (Compile.to_source (ampere ())) in
   Alcotest.(check bool) "duration >= 0" true
-    (r.Compile.duration_ms >= 0.0)
+    (Float.(r.Compile.duration_ms >= 0.0))
+
+(* --- to_ast Tests --- *)
+
+let test_to_ast_ok () =
+  Alcotest.(check bool) "ast ok" true
+    (Result.is_ok (Compile.to_ast (ampere ())))
+
+let test_to_ast_source_generation () =
+  let r = get_ok_or_fail (Compile.to_ast (ampere ())) in
+  Alcotest.(check string) "name ast" "gemm_ampere" r.Compile.kernel_name;
+  Alcotest.(check bool) "source ast non-empty" true (String.length r.Compile.source > 0)
+
+(* --- Content Structure Tests --- *)
 
 let test_source_pragma () =
-  let r = Compile.to_source_exn (ampere ()) in
+  let r = get_ok_or_fail (Compile.to_source (ampere ())) in
   Alcotest.(check bool) "pragma" true
     (contains "#pragma once" r.Compile.source)
 
 let test_source_global () =
-  let r = Compile.to_source_exn (ampere ()) in
+  let r = get_ok_or_fail (Compile.to_source (ampere ())) in
   Alcotest.(check bool) "__global__" true
     (contains "__global__" r.Compile.source)
 
 let test_source_kernel_name () =
-  let r = Compile.to_source_exn (ampere ()) in
+  let r = get_ok_or_fail (Compile.to_source (ampere ())) in
   Alcotest.(check bool) "kernel name" true
     (contains "gemm_ampere" r.Compile.source)
 
 let test_source_hopper_tma () =
-  let r = Compile.to_source_exn (hopper ()) in
+  let r = get_ok_or_fail (Compile.to_source (hopper ())) in
   Alcotest.(check bool) "tma" true
     (contains "tma" r.Compile.source)
 
 let test_source_blackwell_tcgen05 () =
-  let r = Compile.to_source_exn (blackwell ()) in
+  let r = get_ok_or_fail (Compile.to_source (blackwell ())) in
   Alcotest.(check bool) "tcgen05" true
     (contains "tcgen05" r.Compile.source)
 
+
 let test_to_ptx_ok () =
   match Compile.to_ptx (ampere ()) with
-  | Ok _    -> Alcotest.(check bool) "ok" true true
+  | Ok _ -> Alcotest.(check bool) "ok" true true
   | Error e ->
     let msg = match e with
       | Compile.NvrtcError s  -> "NvrtcError: " ^ s
       | Compile.LowerError _  -> "LowerError"
       | Compile.LaunchError s -> "LaunchError: " ^ s
+      | Compile.VerifyError _ -> "VerifyError"
     in
-    Printf.printf "COMPILE ERROR: %s\n%!" msg;
+    printf "COMPILE ERROR: %s\n%!" msg;
     Alcotest.(check bool) "ok" true false
 
 let test_to_ptx_has_ptx () =
   match Compile.to_ptx (ampere ()) with
   | Ok r -> Alcotest.(check bool) "some" true (Option.is_some r.Compile.ptx)
   | Error _ -> Alcotest.fail "expected ok"
+
 
 let test_write_source () =
   let path = "/tmp/tesserae_test_gemm.cuh" in
@@ -117,14 +141,13 @@ let test_write_source () =
   Alcotest.(check bool) "written" true
     (contains "__global__" content)
 
-
 let test_all_archs () =
   let kernels = [ampere (); hopper (); blackwell ()] in
-  List.iter (fun k ->
-    let r = Compile.to_source_exn k in
+  List.iter kernels ~f:(fun k ->
+    let r = get_ok_or_fail (Compile.to_source k) in
     Alcotest.(check bool) "non-empty" true
       (String.length r.Compile.source > 0)
-  ) kernels
+  )
 
 
 let () =
@@ -134,6 +157,8 @@ let () =
                  ; Alcotest.test_case "source"   `Quick test_to_source_has_source
                  ; Alcotest.test_case "no-ptx"   `Quick test_to_source_no_ptx
                  ; Alcotest.test_case "duration" `Quick test_to_source_duration ];
+    "to_ast",    [ Alcotest.test_case "ok"       `Quick test_to_ast_ok
+                 ; Alcotest.test_case "source"   `Quick test_to_ast_source_generation ];
     "content",   [ Alcotest.test_case "pragma"   `Quick test_source_pragma
                  ; Alcotest.test_case "global"   `Quick test_source_global
                  ; Alcotest.test_case "name"     `Quick test_source_kernel_name

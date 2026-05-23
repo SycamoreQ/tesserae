@@ -9,7 +9,7 @@ open Tesserae_kernel
 (** Compilation result. *)
 type result = {
   kernel_name : string;
-  source      : string;   (** CuTe C++ source                    *)
+  source : string;   (** CuTe C++ source                    *)
   ptx         : string option;  (** PTX — Some after nvrtc**)
   duration_ms : float;    (** wall time of compilation            *)
 }
@@ -17,8 +17,9 @@ type result = {
 (** Compilation error. *)
 type compile_error =
   | LowerError   of Lower.error
-  | NvrtcError   of string   (** nvrtc compilation failure — Phase 4 *)
-  | LaunchError  of string   (** kernel launch failure    — Phase 4 *)
+  | NvrtcError   of string   (** nvrtc compilation failure *)
+  | LaunchError  of string   (** kernel launch failure*)
+  | VerifyError of string list (* tirix verification failure *)
 
 (** [to_source k] lowers and emits CuTe C++ for kernel [k].
     Returns [Ok result] with ptx=None, or [Error e]. *)
@@ -26,8 +27,9 @@ val to_source :
   Kernel_ast.kernel ->
   (result, compile_error) Result.t
 
-(** [to_source_exn k] like [to_source] but raises on error. *)
-val to_source_exn : Kernel_ast.kernel -> result
+val to_ast:
+  Kernel_ast.kernel ->
+  (result, compile_error) Result.t
 
 (** [to_ptx k] lowers, emits, and compiles via nvrtc.
     Requires ocaml-cudajit — stub in Phase 3, functional in Phase 4.
