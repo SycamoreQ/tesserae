@@ -6,7 +6,7 @@
   (language c)
   (names nvrtc_stub gpu_buffer_stubs)
   (flags :standard -I/usr/local/cuda/include))
- (c_library_flags -L/usr/local/cuda/lib -lnvrtc -lcuda -lcudart)
+ (c_library_flags (-L/usr/local/cuda-13.0/targets/x86_64-linux/lib -lcudart -lcuda))
  (modules
    nvrtc
    gpu_buffer
