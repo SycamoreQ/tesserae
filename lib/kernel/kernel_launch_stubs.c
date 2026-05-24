@@ -18,6 +18,11 @@
     caml_failwith(cudaGetErrorString(rc)); \
 } while(0)
 
+// Forward declaration
+CAMLprim value caml_launch_kernel(value fn_val, value gx, value gy, value gz,
+                                  value bx, value by, value bz, value smem_val,
+                                  value args_val);
+
 CAMLprim value caml_cuinit(value unit) {
   CAMLparam1(unit);
   CU_CHECK(cuInit(0));

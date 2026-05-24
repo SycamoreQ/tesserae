@@ -63,7 +63,9 @@ let rec lookup_tensor (ctx : ctx) (expr : Kernel_ast.tensor_expr)
       (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
       (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m])
     in
-    make_tensor name elem Kernel_ast.Shared layout sw
+    (match List.find ctx.tensors ~f:(fun (n,_) -> String.equal n name) with
+     | Some (_, t) -> t
+     | None -> make_tensor name elem Kernel_ast.Shared layout sw)
   | Kernel_ast.Tile (inner, _)      -> lookup_tensor ctx inner
   | Kernel_ast.LocalTile (inner, _) -> lookup_tensor ctx inner
 
@@ -82,7 +84,7 @@ let infer_copy_kind (ctx : ctx)
      | Kernel_ast.SM100 -> Tirix.TmaMulticast)
   | "shared", "register" -> Tirix.SmemToReg
   | "register", "shared" -> Tirix.RegToSmem
-  | "register", "global" -> Tirix.RegToSmem
+  | "register", "global" -> Tirix.RegToGlobal
   | _ -> Tirix.CpAsync
 
 
@@ -114,11 +116,11 @@ let lower_barrier = function
   | Kernel_ast.ClusterSync -> Tirix.ClusterArrive
   | Kernel_ast.MbarFull  var ->
     let v = { Tirix.var_name=var; var_id=0
-            ; var_type=Tirix.Scalar Tirix.U64; var_mutable=false } in
+            ; var_type=Tirix.Scalar Tirix.S32; var_mutable=false } in
     Tirix.MbarWaitParity { mbar=v; phase=Tirix.Const (Tirix.S32, 0l) }
   | Kernel_ast.MbarEmpty var ->
     let v = { Tirix.var_name=var; var_id=0
-            ; var_type=Tirix.Scalar Tirix.U64; var_mutable=false } in
+            ; var_type=Tirix.Scalar Tirix.S32; var_mutable=false } in
     Tirix.MbarArrive { mbar=v }
 
 
@@ -157,6 +159,63 @@ let lower_family = function
   | Kernel_ast.SM90 -> Kernel_desc.Hopper
   | Kernel_ast.SM100 -> Kernel_desc.Blackwell
 
+(* Collect all tensors referenced in the kernel body *)
+let rec collect_tensors (stmt : Kernel_ast.stmt) (acc : (string * Tirix.packed_tensor) list)
+    : (string * Tirix.packed_tensor) list =
+  let flat = Layout.make (Modes.Int 1) (Modes.Int 1) in
+  let sw   = Swizzle.make 0 0 0 in
+  match stmt with
+  | Kernel_ast.Load (src, dst, _) | Kernel_ast.Store (src, dst, _) ->
+    let tensors = [] in
+    let tensors = match src with
+      | Kernel_ast.Arg (name, elem, space) ->
+        (name, make_tensor name elem space flat sw) :: tensors
+      | Kernel_ast.Smem (name, elem, shape) ->
+        let layout = Layout.make
+          (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
+          (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m])
+        in
+        (name, make_tensor name elem Kernel_ast.Shared layout sw) :: tensors
+      | _ -> tensors
+    in
+    let tensors = match dst with
+      | Kernel_ast.Arg (name, elem, space) when not (List.exists tensors ~f:(fun (n,_) -> String.equal n name)) ->
+        (name, make_tensor name elem space flat sw) :: tensors
+      | Kernel_ast.Smem (name, elem, shape) when not (List.exists tensors ~f:(fun (n,_) -> String.equal n name)) ->
+        let layout = Layout.make
+          (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
+          (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m])
+        in
+        (name, make_tensor name elem Kernel_ast.Shared layout sw) :: tensors
+      | _ -> tensors
+    in
+    tensors @ acc
+  | Kernel_ast.Mma (a, b, c) ->
+    let collect_tensor tensor_expr acc = match tensor_expr with
+      | Kernel_ast.Arg (name, elem, space) when not (List.exists acc ~f:(fun (n,_) -> String.equal n name)) ->
+        (name, make_tensor name elem space flat sw) :: acc
+      | Kernel_ast.Smem (name, elem, shape) when not (List.exists acc ~f:(fun (n,_) -> String.equal n name)) ->
+        let layout = Layout.make
+          (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
+          (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m])
+        in
+        (name, make_tensor name elem Kernel_ast.Shared layout sw) :: acc
+      | _ -> acc
+    in
+    let acc = collect_tensor a acc in
+    let acc = collect_tensor b acc in
+    collect_tensor c acc
+  | Kernel_ast.For (_, _, _, body) ->
+    List.fold body ~init:acc ~f:(fun acc stmt -> collect_tensors stmt acc)
+  | Kernel_ast.Pipeline (_, stmts) ->
+    List.fold stmts ~init:acc ~f:(fun acc stmt -> collect_tensors stmt acc)
+  | Kernel_ast.If (_, thn, els) ->
+    let acc = List.fold thn ~init:acc ~f:(fun acc stmt -> collect_tensors stmt acc) in
+    List.fold els ~init:acc ~f:(fun acc stmt -> collect_tensors stmt acc)
+  | Kernel_ast.Seq stmts ->
+    List.fold stmts ~init:acc ~f:(fun acc stmt -> collect_tensors stmt acc)
+  | Kernel_ast.Barrier _ -> acc
+
 
 let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
   match stmt with
@@ -189,7 +248,7 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
       mma_kind = infer_mma_kind ctx
     ; tensor_a = lookup_tensor ctx a_expr
     ; tensor_b = lookup_tensor ctx b_expr
-    ; tensor_c=  lookup_tensor ctx c_expr
+    ; tensor_c = lookup_tensor ctx c_expr
     ; smem_desc_a = None
     ; smem_desc_b = None
     ; accum_flag  = true
@@ -229,9 +288,11 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
 
 
 let lower (k : Kernel_ast.kernel) : Tirix.tirix =
+  (* collect all tensors referenced in the kernel *)
+  let tensors = collect_tensors k.Kernel_ast.body [] in
   let ctx = {
     arch = k.Kernel_ast.arch
-  ; tensors = []
+  ; tensors = tensors  (* Initialize ctx with collected tensors *)
   ; var_counter = ref 0
   } in
   let body = convert_stmt ctx k.Kernel_ast.body in
@@ -255,7 +316,7 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   { Tirix.name = k.Kernel_ast.name
   ; family = lower_family k.Kernel_ast.arch
   ; params = lower_params ctx k
-  ; tensors = []
+  ; tensors
   ; smem_bytes =  0
   ; pipeline_depth = k.Kernel_ast.stages
   ; bm = k.Kernel_ast.tile.Kernel_ast.m

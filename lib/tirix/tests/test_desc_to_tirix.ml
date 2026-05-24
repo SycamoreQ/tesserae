@@ -5,7 +5,6 @@ open Tesserae_kernel
 open Tesserae_tirix
 open Tirix
 
-(* --- Kernel Factories --- *)
 
 let ampere_kernel () =
   Kernel_ast.make

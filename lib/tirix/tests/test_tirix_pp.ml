@@ -51,10 +51,6 @@ let minimal_tirix () : tirix =
   ; helpers        = []
   }
 
-(* ------------------------------------------------------------------ *)
-(* pp_scalar_ty                                                        *)
-(* ------------------------------------------------------------------ *)
-
 let test_pp_scalar_u8   () = Alcotest.(check string) "u8"   "uint8_t"       (Tirix_pp.pp_scalar_ty U8)
 let test_pp_scalar_u32  () = Alcotest.(check string) "u32"  "uint32_t"      (Tirix_pp.pp_scalar_ty U32)
 let test_pp_scalar_s32  () = Alcotest.(check string) "s32"  "int32_t"       (Tirix_pp.pp_scalar_ty S32)
@@ -63,11 +59,7 @@ let test_pp_scalar_f16  () = Alcotest.(check string) "f16"  "__half"        (Tir
 let test_pp_scalar_f32  () = Alcotest.(check string) "f32"  "float"         (Tirix_pp.pp_scalar_ty F32)
 let test_pp_scalar_bf16 () = Alcotest.(check string) "bf16" "__nv_bfloat16" (Tirix_pp.pp_scalar_ty BF16)
 let test_pp_scalar_bool () = Alcotest.(check string) "bool" "bool"          (Tirix_pp.pp_scalar_ty Bool)
-let test_pp_scalar_ptr  () = Alcotest.(check string) "ptr"  "uint64_t"      (Tirix_pp.pp_scalar_ty Ptr)
-
-(* ------------------------------------------------------------------ *)
-(* pp_arith_op                                                         *)
-(* ------------------------------------------------------------------ *)
+let test_pp_scalar_ptr  () = Alcotest.(check string) "ptr"  "uint64_t*"      (Tirix_pp.pp_scalar_ty Ptr)
 
 let test_pp_arith_add () =
   Alcotest.(check string) "add" "+" (Tirix_pp.pp_arith_op Arith.Add)
@@ -83,10 +75,6 @@ let test_pp_arith_div () =
 
 let test_pp_arith_mod () =
   Alcotest.(check string) "mod" "%" (Tirix_pp.pp_arith_op Arith.Mod)
-
-(* ------------------------------------------------------------------ *)
-(* pp_cmp_op                                                           *)
-(* ------------------------------------------------------------------ *)
 
 let test_pp_cmp_eq () =
   Alcotest.(check string) "eq" "==" (Tirix_pp.pp_cmp_op Cmp.Eq)
@@ -106,19 +94,11 @@ let test_pp_cmp_gt () =
 let test_pp_cmp_ge () =
   Alcotest.(check string) "ge" ">=" (Tirix_pp.pp_cmp_op Cmp.Ge)
 
-(* ------------------------------------------------------------------ *)
-(* pp_logic_op                                                         *)
-(* ------------------------------------------------------------------ *)
-
 let test_pp_logic_and () =
   Alcotest.(check string) "and" "&&" (Tirix_pp.pp_logic_op Logic.And)
 
 let test_pp_logic_or () =
   Alcotest.(check string) "or" "||" (Tirix_pp.pp_logic_op Logic.Or)
-
-(* ------------------------------------------------------------------ *)
-(* pp_unop                                                             *)
-(* ------------------------------------------------------------------ *)
 
 let test_pp_unop_neg () =
   Alcotest.(check string) "neg" "-" (Tirix_pp.pp_unop Unop.Neg)
@@ -128,10 +108,6 @@ let test_pp_unop_not () =
 
 let test_pp_unop_bitnot () =
   Alcotest.(check string) "bitnot" "~" (Tirix_pp.pp_unop Unop.BitNot)
-
-(* ------------------------------------------------------------------ *)
-(* pp_expr                                                             *)
-(* ------------------------------------------------------------------ *)
 
 let test_pp_expr_const_s32 () =
   Alcotest.(check bool) "42" true
@@ -212,10 +188,6 @@ let test_pp_expr_addrconv_shared () =
   Alcotest.(check bool) "cvta_generic_to_shared" true
     (contains "__cvta_generic_to_shared" (Tirix_pp.pp_expr e))
 
-(* ------------------------------------------------------------------ *)
-(* pp_barrier                                                          *)
-(* ------------------------------------------------------------------ *)
-
 let test_pp_barrier_cta_sync () =
   Alcotest.(check bool) "__syncthreads" true
     (contains "__syncthreads" (Tirix_pp.pp_barrier CtaSync))
@@ -283,10 +255,6 @@ let test_pp_barrier_tcgen05_fence () =
   Alcotest.(check bool) "tcgen05.fence" true
     (contains "tcgen05.fence"
       (Tirix_pp.pp_barrier Tcgen05Fence))
-
-(* ------------------------------------------------------------------ *)
-(* pp_op                                                               *)
-(* ------------------------------------------------------------------ *)
 
 let test_pp_op_copy_cp_async () =
   let src = make_tensor "A"      Elemtype.Float16 Memspace.Global in
@@ -381,10 +349,6 @@ let test_pp_op_smem_desc_init () =
   }) in
   Alcotest.(check bool) "desc var" true (contains "desc" s)
 
-(* ------------------------------------------------------------------ *)
-(* pp_stmt                                                             *)
-(* ------------------------------------------------------------------ *)
-
 let test_pp_stmt_slet () =
   let v = fresh_var "x" S32 in
   let s = Tirix_pp.pp_stmt
@@ -477,10 +441,6 @@ let test_pp_stmt_depth_increases_indent () =
   Alcotest.(check bool) "depth 1 longer" true
     (String.length s1 > String.length s0)
 
-(* ------------------------------------------------------------------ *)
-(* pp_helper                                                           *)
-(* ------------------------------------------------------------------ *)
-
 let test_pp_helper_name () =
   let h = {
     hf_name     = "make_smem_desc"
@@ -562,10 +522,6 @@ let test_pp_tirix_with_helper () =
   let k = { (minimal_tirix ()) with helpers = [h] } in
   let s = Tirix_pp.pp_tirix k in
   Alcotest.(check bool) "helper name" true (contains "make_smem_desc" s)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                              *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Tirix_pp" [

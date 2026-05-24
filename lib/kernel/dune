@@ -4,6 +4,11 @@
  (ocamlopt_flags (:standard -w -69))
  (ocamlc_flags (:standard -w -69))
  (libraries base tesserae_core tesserae_atoms tesserae_pipeline)
+ (foreign_stubs
+  (language c)
+  (names kernel_launch_stubs)
+  (flags (:standard -I/usr/local/cuda/include)))
+ (c_library_flags (-L/usr/local/cuda/lib64 -lcuda -lcudart))
  (modules
    kernel_ast
    kernel_desc

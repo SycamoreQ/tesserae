@@ -297,9 +297,6 @@ let test_host_launcher_tma_map () =
   Alcotest.(check bool) "CUtensorMap" true
     (contains "CUtensorMap" out.Backend_cute.host_launcher)
 
-(* ------------------------------------------------------------------ *)
-(* emit (full output)                                                  *)
-(* ------------------------------------------------------------------ *)
 
 let test_emit_full_ampere () =
   let out = lower_and_emit (ampere_kernel ()) in

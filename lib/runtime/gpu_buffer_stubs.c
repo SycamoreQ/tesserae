@@ -75,9 +75,17 @@ CAMLprim value caml_gpu_copy_to_host(value dst, value v, value n_bytes) {
   CAMLreturn(Val_unit);
 }
 
-
 CAMLprim value caml_gpu_ptr(value v) {
   CAMLparam1(v);
   void* ptr = *((void**) Data_custom_val(v));
   CAMLreturn(caml_copy_nativeint((intnat) ptr));
+}
+
+CAMLprim value caml_gpu_memset_zero(value v, value n_bytes) {
+  CAMLparam2(v, n_bytes);
+  void* ptr = *((void**) Data_custom_val(v));
+  cudaError_t rc = cudaMemset(ptr, 0, Int_val(n_bytes));
+  if (rc != cudaSuccess)
+    caml_failwith(cudaGetErrorString(rc));
+  CAMLreturn(Val_unit);
 }

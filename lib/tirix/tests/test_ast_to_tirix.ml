@@ -610,10 +610,6 @@ let test_verify_with_pipeline () =
   Alcotest.(check bool) "verify ok" true
     (Result.is_ok (Tirix_verify.verify tirix))
 
-(* ------------------------------------------------------------------ *)
-(* end to end — lower then emit                                       *)
-(* ------------------------------------------------------------------ *)
-
 let test_emit_ampere_mma () =
   let tirix = Ast_to_tirix.lower (ampere_with_mma ()) in
   let out = Tirix_emit.emit tirix in
@@ -637,10 +633,6 @@ let test_emit_blackwell_has_tcgen05 () =
   let out = Tirix_emit.emit tirix in
   Alcotest.(check bool) "tcgen05" true
     (contains "tcgen05" out.Backend_cute.full_source)
-
-(* ------------------------------------------------------------------ *)
-(* runner                                                             *)
-(* ------------------------------------------------------------------ *)
 
 let () =
   Alcotest.run "Ast_to_tirix" [

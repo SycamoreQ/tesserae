@@ -53,37 +53,51 @@ let make_global_tensor name elem_type =
     tensor_swizzle = Swizzle.make 0 0 0;
   }
 
-let construct_smem_tensors (desc : (_, _, _, _, _, _) Kernel_desc.t) =
+let make_shared_tensor name elem_type bm bn bk depth =
   let i n = Modes.Int n in
   let tup ts = Modes.Tuple ts in
   let lay s d = Layout.make s d in
+  let sw = Swizzle.smem_selector elem_type bm bk in
+  Tensor {
+    tensor_name  = name;
+    tensor_id = Type_id.create ();
+    tensor_elem_type = elem_type;
+    tensor_memspace = Memspace.Shared;
+    tensor_layout = lay
+      (tup [i depth; i bm; i bk])
+      (tup [i (bm * bk); i 1; i bm]);
+    tensor_swizzle = sw;
+  }
+
+let construct_smem_tensors (desc : (_, _, _, _, _, _) Kernel_desc.t) =
   let elem = elem_type_of desc in
   let bm = desc.Kernel_desc.bm in
   let bk = desc.Kernel_desc.bk in
   let bn_s = bn_smem desc in
   let d = desc.Kernel_desc.pipeline.Pipeline.depth in
-  let sw = Swizzle.smem_selector elem bm bk in
-  let smem_a = Tensor {
-    tensor_name  = "smem_A";
-    tensor_id = Type_id.create ();
-    tensor_elem_type = elem;
-    tensor_memspace = Memspace.Shared;
-    tensor_layout = lay
-      (tup [i d; i bm; i bk])
-      (tup [i (bm * bk); i 1; i bm]);
-    tensor_swizzle = sw;
-  } in
-  let smem_b = Tirix.Tensor {
-    tensor_name = "smem_B";
-    tensor_id = Tirix.Type_id.create ();
-    tensor_elem_type = elem;
-    tensor_memspace = Memspace.Shared;
-    tensor_layout = lay
-      (tup [i d; i bn_s; i bk])
-      (tup [i (bn_s * bk); i 1; i bn_s]);
-    tensor_swizzle   = sw;
-  } in
-  [ ("smem_A", smem_a); ("smem_B", smem_b) ]
+  let smem_a = make_shared_tensor "smem_A" elem bm bk bk d in
+  let smem_b = make_shared_tensor "smem_B" elem bn_s bk bk d in
+  let tensors = [ ("smem_A", smem_a); ("smem_B", smem_b) ] in
+  if is_tma desc then
+    let mbar_full = Tensor {
+      tensor_name = "full_mbar";
+      tensor_id = Type_id.create ();
+      tensor_elem_type = Elemtype.Int32;
+      tensor_memspace = Memspace.Shared;
+      tensor_layout = flat_layout ();
+      tensor_swizzle = Swizzle.make 0 0 0;
+    } in
+    let mbar_empty = Tensor {
+      tensor_name  = "empty_mbar";
+      tensor_id    = Type_id.create ();
+      tensor_elem_type = Elemtype.Int32;
+      tensor_memspace = Memspace.Shared;
+      tensor_layout = flat_layout ();
+      tensor_swizzle = Swizzle.make 0 0 0;
+    } in
+    tensors @ [ ("full_mbar", mbar_full); ("empty_mbar", mbar_empty) ]
+  else
+    tensors
 
 
 let construct_vars (desc : (_, _, _, _, _, _) Kernel_desc.t) =
@@ -99,14 +113,14 @@ let construct_vars (desc : (_, _, _, _, _, _) Kernel_desc.t) =
   let base_vars =
     [ warp_id; lane_id; block_m; block_n; row; col; k_loop; stage; phase ]
   in
-  if is_tma desc then
+  if is_blackwell desc then
+    let tmem_addr = mk_var "tmem_addr" U32 ~mut:true () in
+    let cta_rank  = mk_var "cta_rank"  S32 () in
+    base_vars @ [ tmem_addr; cta_rank ]
+  else if is_tma desc then
     let full_mbar  = mk_var "full_mbar"  U64 () in
     let empty_mbar = mk_var "empty_mbar" U64 () in
     base_vars @ [ full_mbar; empty_mbar ]
-  else if is_blackwell desc then
-    let tmem_addr = mk_var "tmem_addr" U32 () in
-    let cta_rank  = mk_var "cta_rank"  S32 () in
-    base_vars @ [ tmem_addr; cta_rank ]
   else
     base_vars
 
@@ -128,9 +142,6 @@ let construct_params (desc : (_, _, _, _, _, _) Kernel_desc.t) =
     param_tensor = make_global_tensor "C" Elemtype.Float32;
     param_is_tma = false;
   } in
-  (* M, N, K are scalar ints — we represent them as flat global tensors
-     of size 1. tirix_emit will special-case params named M/N/K to emit
-     them as `int M` rather than a pointer. *)
   let m_param = {
     param_name = "M";
     param_tensor = make_global_tensor "M" Elemtype.Int32;
@@ -160,8 +171,6 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
     hf_body     = [
       SLet (mk_var "addr" U32 (), Expr (AddrConv (GenericToShared,
         Var (mk_var "ptr" U64 ()))));
-      (* body emits the descriptor bit-packing — tirix_emit handles the
-         actual asm string from SmemDescInit op *)
       SOp (SmemDescInit {
         desc_var = mk_var "desc" U64 ~mut:true ();
         ptr_expr = Var (mk_var "ptr" U64 ());
@@ -183,14 +192,7 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
       SOp (Copy {
         copy_kind = TmaLoad;
         src_tensor = make_global_tensor "gmem" (elem_type_of desc);
-        dst_tensor = Tensor {
-          tensor_name = "smem";
-          tensor_id = Type_id.create ();
-          tensor_elem_type = elem_type_of desc;
-          tensor_memspace = Memspace.Shared;
-          tensor_layout = flat_layout ();
-          tensor_swizzle = Swizzle.make 0 0 0;
-        };
+        dst_tensor = make_shared_tensor "smem" (elem_type_of desc) 128 128 32 4;
         pred_expr = None;
         mbar_var= Some (mk_var "mbar" U64 ());
       });
@@ -209,14 +211,7 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
       SOp (Copy {
         copy_kind  = TmaMulticast;
         src_tensor = make_global_tensor "gmem" (elem_type_of desc);
-        dst_tensor = Tensor {
-          tensor_name = "smem";
-          tensor_id = Type_id.create ();
-          tensor_elem_type = elem_type_of desc;
-          tensor_memspace = Memspace.Shared;
-          tensor_layout = flat_layout ();
-          tensor_swizzle = Swizzle.make 0 0 0;
-        };
+        dst_tensor = make_shared_tensor "smem" (elem_type_of desc) 128 128 32 4;
         pred_expr = None;
         mbar_var = Some (mk_var "mbar" U64 ());
       });
@@ -301,10 +296,9 @@ let construct_producer_body
   let loop_body = let_stage :: copy_ops in
   SWarpGroup (Cluster.Producer, [
     SFor {
-      var    = k_var;
-      start  = i32 0;
-      stop   = i32 (Layout.size
-                (Layout.make (Modes.Int (desc.Kernel_desc.bk)) (Modes.Int 1)));
+      var = k_var;
+      start = i32 0;
+      stop = i32 bk;
       step = i32 1;
       dir = Upto;
       unroll = false;
@@ -369,13 +363,13 @@ let construct_consumer_body
   in
   SWarpGroup (Cluster.Consumer, [
     SFor {
-      var    = k_var;
-      start  = i32 0;
-      stop   = i32 bk;
-      step   = i32 1;
-      dir    = Upto;
+      var = k_var;
+      start = i32 0;
+      stop = i32 bk;
+      step = i32 1;
+      dir = Upto;
       unroll = false;
-      body   = loop_body;
+      body = loop_body;
     }
   ])
 
@@ -388,7 +382,7 @@ let construct_epilogue_body
     let tmem_addr = find "tmem_addr" in
     let n_loads   = desc.Kernel_desc.bn / 8 in
     let dst_vars  = List.init n_loads ~f:(fun i ->
-      mk_var (Printf.sprintf "reg_%d" i) F32 ()) in
+      mk_var (Printf.sprintf "reg_%d" i) F32 ~mut:true ()) in
     SWarpGroup (Cluster.Epilogue, [
       SOp (TmemLoad {
         dst_vars;
@@ -451,7 +445,7 @@ let tmem_alloc_op
   else
     let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
     let addr = find "tmem_addr" in
-    Some (SOp (TmemAlloc { addr_var = addr; col_count = desc.Kernel_desc.bn }))
+    Some (SOp (TmemAlloc { addr_var = addr; col_count = desc.Kernel_desc.bn / 2 }))
 
 let tmem_dealloc_op
     (desc : (_, _, _, _, _, _) Kernel_desc.t)
@@ -460,7 +454,7 @@ let tmem_dealloc_op
   else
     let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
     let addr = find "tmem_addr" in
-    Some (SOp (TmemDealloc { addr_var = addr; col_count = desc.Kernel_desc.bn }))
+    Some (SOp (TmemDealloc { addr_var = addr; col_count = desc.Kernel_desc.bn / 2 }))
 
 
 let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
@@ -505,7 +499,7 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
   ; bk = desc.Kernel_desc.bk
   ; smem_bytes = Kernel_desc.smem_bytes desc
   ; cluster = desc.Kernel_desc.cluster
-  ; pipeline_depth = 4
+  ; pipeline_depth = desc.Kernel_desc.pipeline.Pipeline.depth
   ; body
   ; helpers
   }
