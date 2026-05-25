@@ -1,37 +1,47 @@
 open Base
+open Bigarray
 
 type module_ = {
   handle : nativeint ref;
 }
 
 type func = {
-  handle  : nativeint ref;
-  name    : string;
+  handle : nativeint ref;
+  name   : string;
 }
 
-external caml_cuinit              : unit -> unit
+external caml_cuinit : unit -> unit
   = "caml_cuinit"
-external caml_module_load_ptx     : string -> nativeint
+external caml_module_load_ptx : string -> nativeint
   = "caml_module_load_ptx"
-external caml_module_unload       : nativeint -> unit
+external caml_module_unload : nativeint -> unit
   = "caml_module_unload"
-external caml_get_function        : nativeint -> string -> nativeint
+external caml_get_function : nativeint -> string -> nativeint
   = "caml_get_function"
-external caml_launch_kernel       : nativeint
+
+external caml_launch_kernel : nativeint
   -> int -> int -> int
   -> int -> int -> int
   -> int
-  -> nativeint array
+  -> (nativeint, nativeint_elt, c_layout) Array1.t
   -> unit
   = "caml_launch_kernel_bytecode" "caml_launch_kernel"
+
 external caml_device_synchronize  : unit -> unit
   = "caml_device_synchronize"
 external caml_device_info         : unit -> string
   = "caml_device_info"
 
-let () = caml_cuinit ()
+let init_called = ref false
+
+let ensure_init () =
+  if not !init_called then begin
+    caml_cuinit ();
+    init_called := true
+  end
 
 let load_ptx (ptx : string) : module_ =
+  ensure_init ();
   let h = caml_module_load_ptx ptx in
   { handle = ref h }
 
@@ -58,7 +68,12 @@ let launch (f : func)
     ~(args  : nativeint list) : unit =
   let gx, gy, gz = grid in
   let bx, by, bz = block in
-  let arr = Array.of_list args in
+
+  (* Pack arguments into a safe, contiguous off-heap Bigarray *)
+  let len = List.length args in
+  let arr = Array1.create nativeint c_layout len in
+  List.iteri args ~f:(fun i v -> Array1.set arr i v);
+
   caml_launch_kernel !(f.handle)
     gx gy gz bx by bz smem arr
 

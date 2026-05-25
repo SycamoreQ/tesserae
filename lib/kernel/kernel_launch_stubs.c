@@ -4,6 +4,9 @@
 #include <caml/memory.h>
 #include <caml/alloc.h>
 #include <caml/fail.h>
+#include <caml/bigarray.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #define CU_CHECK(rc) do { \
   if ((rc) != CUDA_SUCCESS) { \
@@ -18,10 +21,10 @@
     caml_failwith(cudaGetErrorString(rc)); \
 } while(0)
 
-// Forward declaration
+// Forward declaration matching the Bigarray tracking layout
 CAMLprim value caml_launch_kernel(value fn_val, value gx, value gy, value gz,
                                   value bx, value by, value bz, value smem_val,
-                                  value args_val);
+                                  value args_bigarray);
 
 CAMLprim value caml_cuinit(value unit) {
   CAMLparam1(unit);
@@ -64,20 +67,24 @@ CAMLprim value caml_launch_kernel(
     value gx, value gy, value gz,
     value bx, value by, value bz,
     value smem_val,
-    value args_val) {
-  CAMLparam5(fn_val, gx, gy, args_val, smem_val);
+    value args_bigarray) {
+
+  // Bigarray values do not wander during GC allocations, but standard parameters do
+  CAMLparam5(fn_val, gx, gy, smem_val, args_bigarray);
   CAMLxparam4(gz, bx, by, bz);
 
   CUfunction fn = (CUfunction) Nativeint_val(fn_val);
 
-  /* build kernel params array from OCaml nativeint array */
-  mlsize_t n = Wosize_val(args_val);
-  void** params = (void**) malloc(n * sizeof(void*));
-  intnat* vals  = (intnat*) malloc(n * sizeof(intnat));
+  // Extract raw pointer array and dimension boundary from Bigarray
+  struct caml_ba_array* ba = Caml_ba_array_val(args_bigarray);
+  intnat n = ba->dim[0];
+  void** src_ptrs = (void**) ba->data;
 
-  for (mlsize_t i = 0; i < n; i++) {
-    vals[i]   = Nativeint_val(Field(args_val, i));
-    params[i] = &vals[i];
+  // Build the secondary reference tracking layout expected by cuLaunchKernel
+  void** params = (void**) malloc(n * sizeof(void*));
+  for (intnat i = 0; i < n; i++) {
+    // Each parameter in params must point to the actual storage layout
+    params[i] = &(src_ptrs[i]);
   }
 
   CUresult rc = cuLaunchKernel(fn,
@@ -87,7 +94,6 @@ CAMLprim value caml_launch_kernel(
     params, NULL);
 
   free(params);
-  free(vals);
   CU_CHECK(rc);
   CAMLreturn(Val_unit);
 }
@@ -103,7 +109,8 @@ CAMLprim value caml_device_info(value unit) {
   int dev = 0;
   struct cudaDeviceProp prop;
   CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
-  char buf[256];
+
+  char buf[512];
   snprintf(buf, sizeof(buf), "%s (sm_%d%d)",
     prop.name,
     prop.major,

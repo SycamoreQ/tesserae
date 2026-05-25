@@ -150,7 +150,16 @@ let test_all_archs () =
   )
 
 
+let nvrtc_available () =
+  match Sys.getenv "CUTLASS_PATH" with
+  | Some _ -> true
+  | None -> false
+
 let () =
+  let ptx_tests = if nvrtc_available () then
+    [ Alcotest.test_case "ok" `Quick test_to_ptx_ok
+    ; Alcotest.test_case "has-ptx" `Quick test_to_ptx_has_ptx ]
+  else [] in
   Alcotest.run "Compile" [
     "to_source", [ Alcotest.test_case "ok"       `Quick test_to_source_ok
                  ; Alcotest.test_case "name"     `Quick test_to_source_name
@@ -164,8 +173,7 @@ let () =
                  ; Alcotest.test_case "name"     `Quick test_source_kernel_name
                  ; Alcotest.test_case "hopper"   `Quick test_source_hopper_tma
                  ; Alcotest.test_case "blkwll"   `Quick test_source_blackwell_tcgen05 ];
-    "to_ptx",    [ Alcotest.test_case "ok"       `Quick test_to_ptx_ok
-                 ; Alcotest.test_case "has-ptx"  `Quick test_to_ptx_has_ptx ];
+    "to_ptx",    ptx_tests;
     "write",     [ Alcotest.test_case "file"     `Quick test_write_source ];
     "all_archs", [ Alcotest.test_case "three"    `Quick test_all_archs ];
   ]

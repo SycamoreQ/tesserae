@@ -51,6 +51,13 @@ let mk_var name ty =
   ; var_mutable = false
   }
 
+let mk_mut_var name ty =
+  { var_name = name
+  ; var_id = 0
+  ; var_type = Scalar ty
+  ; var_mutable = true
+  }
+
 let mk_tir_minimal (f:  Kernel_desc.family) =
   { name = "test_kernel"
   ; family = f
@@ -60,7 +67,7 @@ let mk_tir_minimal (f:  Kernel_desc.family) =
   ; bn = 128
   ; bk = 32
   ; smem_bytes = 0
-  ;pipeline_depth = 4
+  ; pipeline_depth = 4
   ; cluster    = Cluster.make { Cluster.x=1; y=1; z=1 } 4
       [ (0, Cluster.Producer); (1, Cluster.Consumer)
       ; (2, Cluster.Epilogue); (3, Cluster.Epilogue) ]
@@ -88,12 +95,12 @@ let test_empty_body_for_arch arch name =
   Alcotest.(check bool) name true (Result.is_ok (Tirix_verify.verify tir))
 
 let test_valid_empty_body () =
-  test_empty_body_for_arch Kernel_desc.Ampere    "empty body ok (Ampere)";
-  test_empty_body_for_arch Kernel_desc.Hopper    "empty body ok (Hopper)";
+  test_empty_body_for_arch Kernel_desc.Ampere "empty body ok (Ampere)";
+  test_empty_body_for_arch Kernel_desc.Hopper "empty body ok (Hopper)";
   test_empty_body_for_arch Kernel_desc.Blackwell "empty body ok (Blackwell)"
 
 let test_slet_use_for_arch arch name =
-  let v = mk_var "x" S32 in
+  let v = mk_mut_var "x" S32 in
   let tir = { (mk_tir_minimal arch) with body = [
     SLet (v, Expr (Const (S32, 0l)));
     SAssign (v, Expr (Var v));

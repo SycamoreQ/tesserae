@@ -387,6 +387,27 @@ let emit_params (k : tirix) : string =
         else
           Printf.sprintf "const %s* %s" elem_t p.param_name))
 
+
+let rec collect_warp_groups (stmts : stmt list) : (Cluster.warp_role * stmt list) list =
+  List.concat_map stmts ~f:(function
+    | SWarpGroup (role, body) -> [(role, body)]
+    | SSeq ss -> collect_warp_groups ss
+    | SIf (_, thn, els) -> collect_warp_groups thn @ collect_warp_groups els
+    | SFor { body; _ } -> collect_warp_groups body
+    | SPipeline { prologue; mainloop; epilogue; _ } ->
+      collect_warp_groups prologue @ collect_warp_groups mainloop @ collect_warp_groups epilogue
+    | _ -> [])
+
+
+
+let rec filter_non_warp (stmts : stmt list) : stmt list =
+  List.filter_map stmts ~f:(function
+    | SWarpGroup _ -> None
+    | SSeq ss ->
+      let filtered = filter_non_warp ss in
+      if List.is_empty filtered then None else Some (SSeq filtered)
+    | s -> Some s)
+
 let emit_kernel_func (k : tirix) : string =
   let n_threads    = Cluster.thread_count k.cluster in
   let cluster_attr =
@@ -395,24 +416,22 @@ let emit_kernel_func (k : tirix) : string =
         (Cluster.emit_cluster_attr k.cluster)
     else ""
   in
-  let pre_dispatch =
-    List.filter k.body ~f:(function SWarpGroup _ -> false | _ -> true)
-  in
+  let warp_groups = collect_warp_groups k.body in
+  let pre_dispatch = filter_non_warp k.body in
   let pre_s = emit_stmts ~depth:1 pre_dispatch in
-  let warp_cases = List.filter_map k.body ~f:(function
-    | SWarpGroup (role, body) ->
-      let warp_ids = List.filter_map k.cluster.Cluster.warp_roles
-        ~f:(fun (id, r) -> if Poly.(r = role) then Some id else None)
-      in
-      let cond = match warp_ids with
-        | [id] -> Printf.sprintf "warp_id == %d" id
-        | ids ->
-          String.concat ~sep:" || "
-            (List.map ids ~f:(Printf.sprintf "warp_id == %d"))
-      in
-      Some (Printf.sprintf "  if (%s) {\n%s\n  }"
-        cond (emit_stmts ~depth:2 body))
-    | _ -> None)
+  let warp_cases = List.map warp_groups ~f:(fun (role, body) ->
+    let warp_ids = List.filter_map k.cluster.Cluster.warp_roles
+      ~f:(fun (id, r) -> if Poly.(r = role) then Some id else None)
+    in
+    let cond = match warp_ids with
+      | [] -> "false"
+      | [id] -> Printf.sprintf "warp_id == %d" id
+      | ids ->
+        String.concat ~sep:" || "
+          (List.map ids ~f:(Printf.sprintf "warp_id == %d"))
+    in
+    Printf.sprintf "  if (%s) {\n%s\n  }"
+      cond (emit_stmts ~depth:2 body))
   in
   let warp_dispatch = String.concat ~sep:" else " warp_cases in
   Printf.sprintf
@@ -433,6 +452,22 @@ let emit_kernel_func (k : tirix) : string =
     pre_s
     warp_dispatch
 
+
+let emit_host_launcher_params (k : tirix) : string =
+  String.concat ~sep:",\n  "
+    (List.map k.params ~f:(fun p ->
+      let (Tensor t) = p.param_tensor in
+      let elem_t = Elemtype.cpp_name t.tensor_elem_type in
+      match p.param_name with
+      | "M" | "N" | "K" ->
+        Printf.sprintf "int %s" p.param_name
+      | _ ->
+        if p.param_is_tma then
+          Printf.sprintf "CUtensorMap* %s_tmap" p.param_name
+        else
+          Printf.sprintf "const %s* %s" elem_t p.param_name))
+
+
 let emit_host_launcher (k : tirix) : string =
   let is_blackwell =
     match k.family with Kernel_desc.Blackwell -> true | _ -> false
@@ -448,18 +483,26 @@ let emit_host_launcher (k : tirix) : string =
         \  attrs[0].id = cudaLaunchAttributeClusterDimension;\n\
         \  attrs[0].val.clusterDim = {%d, %d, %d};\n\
         \  cfg.attrs = attrs; cfg.numAttrs = 1;\n\
-        \  cudaLaunchKernelEx(&cfg, %s, M, N, K);"
+        \  cudaLaunchKernelEx(&cfg, %s, %s);"
         k.smem_bytes
         k.cluster.Cluster.dims.Cluster.x
         k.cluster.Cluster.dims.Cluster.y
         k.cluster.Cluster.dims.Cluster.z
         k.name
+        (String.concat ~sep:", "
+          (List.map k.params ~f:(fun p ->
+            if p.param_is_tma then Printf.sprintf "&%s_tmap" p.param_name
+            else p.param_name)))
     else
       Printf.sprintf
         "  cudaFuncSetAttribute(%s,\n\
         \    cudaFuncAttributeMaxDynamicSharedMemorySize, %d);\n\
-        \  %s<<<grid, block, %d>>>(M, N, K);"
+        \  %s<<<grid, block, %d>>>(%s);"
         k.name k.smem_bytes k.name k.smem_bytes
+        (String.concat ~sep:", "
+          (List.map k.params ~f:(fun p ->
+            if p.param_is_tma then Printf.sprintf "&%s_tmap" p.param_name
+            else p.param_name)))
   in
   Printf.sprintf
     "void launch_%s(\n  %s,\n  int M, int N, int K\n) {\n\
@@ -468,7 +511,7 @@ let emit_host_launcher (k : tirix) : string =
      %s\n\
      }\n"
     k.name
-    (emit_params k)
+    (emit_host_launcher_params k)
     k.bm k.bm k.bn k.bn
     (Cluster.thread_count k.cluster)
     launch

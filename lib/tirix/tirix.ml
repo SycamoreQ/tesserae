@@ -200,10 +200,10 @@ type stmt =
 
 
 type helper_func = {
-  hf_name      : string;
-  hf_params    : var list;
-  hf_ret_type  : packed_scalar;
-  hf_body      : stmt list;
+  hf_name : string;
+  hf_params : var list;
+  hf_ret_type : packed_scalar;
+  hf_body: stmt list;
 }
 
 type param = {

@@ -12,6 +12,7 @@
   (name test_lower)
   (libraries tesserae alcotest))
 
-  (test
-    (name test_kernel_launch)
-    (libraries tesserae alcotest))
+(test
+  (name test_kernel_launch)
+  (libraries tesserae alcotest)
+  (link_flags (-cclib -L/usr/local/cuda/lib64 -cclib -lcuda -cclib -lcudart)))

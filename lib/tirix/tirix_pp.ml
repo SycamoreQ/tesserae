@@ -107,8 +107,8 @@ let pp_copy_kind = function
   | CpAsync -> "cp.async"
   | TmaLoad -> "tma.load"
   | TmaMulticast -> "tma.multicast"
-  | RegToSmem -> "reg→smem"
-  | SmemToReg -> "smem→reg"
+  | RegToSmem -> "reg -> smem"
+  | SmemToReg -> "smem -> reg"
 
 let pp_mma_kind = function
   | Sm80Mma -> "mma.sync (SM80)"

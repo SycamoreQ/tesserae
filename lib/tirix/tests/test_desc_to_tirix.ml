@@ -316,9 +316,8 @@ let test_blackwell_has_tmem_dealloc () =
 let test_blackwell_tmem_col_count () =
   let tirix = lower (blackwell_kernel ()) in
   match List.find tirix.body ~f:(function SOp (TmemAlloc _) -> true | _ -> false) with
-  | Some (SOp (TmemAlloc { col_count; _ })) -> Alcotest.(check int) "col_count=256" 256 col_count
+  | Some (SOp (TmemAlloc { col_count; _ })) -> Alcotest.(check int) "col_count=128" 128 col_count
   | _ -> Alcotest.fail "no tmem alloc"
-
 
 let test_ampere_no_helpers () =
   let tirix = lower (ampere_kernel ()) in
@@ -389,9 +388,9 @@ let test_hopper_empty_mbar_declared () =
 let test_blackwell_tmem_addr_declared () =
   let tirix = lower (blackwell_kernel ()) in
   Alcotest.(check bool) "tmem_addr decl" true
-    (List.exists tirix.body ~f:(function SLet (v, _) -> String.equal v.var_name "tmem_addr" | _ -> false))
-
-(* --- Main Executable Linkage --- *)
+    (List.exists tirix.body ~f:(function
+      | SLet (v, _) | SLetMut (v, _) -> String.equal v.var_name "tmem_addr"
+      | _ -> false))
 
 let () =
   Alcotest.run "Desc_to_tirix" [

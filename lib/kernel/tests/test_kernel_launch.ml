@@ -1,28 +1,11 @@
+open Base
 open Tesserae_kernel
 open Tesserae_runtime
 
-(* Kernel_launch wraps PTX loading and kernel execution.
-   Functions needed:
-   - load_ptx : string -> Kernel_launch.module_
-       load PTX string into CUDA driver, return module handle
-   - get_function : module_ -> string -> Kernel_launch.func
-       get kernel function handle by name
-   - launch : func
-       -> grid:(int * int * int)
-       -> block:(int * int * int)
-       -> smem:int
-       -> args:nativeint list
-       -> unit
-       launch kernel with given config and raw pointer args
-   - unload : module_ -> unit
-       unload CUDA module, free driver resources
-   - synchronize : unit -> unit
-       cudaDeviceSynchronize — wait for all kernels to finish *)
-
-(* trivial PTX kernel for testing — adds 1.0 to each element *)
+(* Trivial PTX kernel for testing — adds 1.0 to each element *)
 let trivial_ptx = {|
-.version 7.0
-.target sm_80
+.version 7.8
+.target sm_90
 .address_size 64
 
 .visible .entry trivial_add(
@@ -30,9 +13,10 @@ let trivial_ptx = {|
   .param .u32 param1
 )
 {
-  .reg .u64 %rd<4>;
+  .reg .u64 %rd<3>;
   .reg .u32 %r<4>;
-  .reg .f32 %f<4>;
+  .reg .f32 %f<2>;
+  .reg .pred %p<2>;
 
   ld.param.u64 %rd0, [param0];
   ld.param.u32 %r0,  [param1];
@@ -46,12 +30,12 @@ let trivial_ptx = {|
   @%p0 bra done;
 
   cvt.u64.u32 %rd1, %r3;
-  shl.b64 %rd2, %rd1, 2;
-  add.u64 %rd3, %rd0, %rd2;
+  mul.wide.u32 %rd2, %r3, 4;
+  add.u64 %rd1, %rd0, %rd1;
 
-  ld.global.f32 %f0, [%rd3];
+  ld.global.f32 %f0, [%rd1];
   add.f32 %f0, %f0, 1.0;
-  st.global.f32 [%rd3], %f0;
+  st.global.f32 [%rd1], %f0;
 
 done:
   ret;
@@ -70,8 +54,8 @@ let test_get_function () =
   Kernel_launch.unload m
 
 let test_launch_trivial () =
-  let n    = 1024 in
-  let host = Array.make n 0.0 in
+  let n = 1024 in
+  let host = Array.init n ~f:(fun _ -> 0.0) in
   let buf  = Gpu_buffer.alloc n in
   Gpu_buffer.copy_from_host buf host;
 
@@ -88,8 +72,8 @@ let test_launch_trivial () =
   Kernel_launch.synchronize ();
 
   let result = Gpu_buffer.to_host buf in
-  Alcotest.(check bool) "all ones" true
-    (Array.for_all (fun x -> abs_float (x -. 1.0) < 1e-5) result);
+    let is_all_ones = Array.for_all result ~f:(fun x -> Float.(abs (x - 1.0) < 1e-5)) in
+    Alcotest.(check bool) "all ones" true is_all_ones;
 
   Gpu_buffer.free buf;
   Kernel_launch.unload m
@@ -106,9 +90,9 @@ let test_unload_idempotent () =
 
 let () =
   Alcotest.run "Kernel_launch" [
-    "load",    [ Alcotest.test_case "ptx"       `Quick test_load_ptx
-               ; Alcotest.test_case "function"  `Quick test_get_function ];
-    "launch",  [ Alcotest.test_case "trivial"   `Quick test_launch_trivial ];
-    "misc",    [ Alcotest.test_case "sync"      `Quick test_synchronize
+    "load",   [ Alcotest.test_case "ptx"      `Quick test_load_ptx
+               ; Alcotest.test_case "function" `Quick test_get_function ];
+    "launch", [ Alcotest.test_case "trivial"   `Quick test_launch_trivial ];
+    "misc",   [ Alcotest.test_case "sync"      `Quick test_synchronize
                ; Alcotest.test_case "unload"    `Quick test_unload_idempotent ];
   ]

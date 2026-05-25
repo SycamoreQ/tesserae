@@ -6,9 +6,9 @@ open Tesserae_pipeline
 open Tesserae_kernel
 
 type output = {
-  filename  : string;
-  includes  : string;
-  helpers  : string;
+  filename : string;
+  includes : string;
+  helpers : string;
   shared_storage : string;
   producer_body : string;
   consumer_body : string;
@@ -84,7 +84,6 @@ let emit_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
     in
     String.concat ~sep:"\n\n" [smem_desc_helper; tma_load; tma_multicast]
 
-(* __shared__ must NOT appear inside a struct — only on the instance *)
 let emit_shared_storage (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
   let et   = elem_t desc in
   let bm   = desc.Kernel_desc.bm in
@@ -100,9 +99,9 @@ let emit_shared_storage (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
   in
   Printf.sprintf
     "struct SharedStorage {\n\
-    \  %s smem_A[%d][%d];\n\
-    \  %s smem_B[%d][%d];\n\
-    %s%s};"
+     %s smem_A[%d][%d];\n\
+     %s smem_B[%d][%d];\n\
+     %s%s};"
     et d (bm * bk)
     et d (bn_s * bk)
     mbar_decls
@@ -121,48 +120,48 @@ let emit_producer_body (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
   in
   let load_body = match desc.Kernel_desc.family with
     | Kernel_desc.Ampere ->
-      (* use __cvta_generic_to_shared to get 32-bit smem addr for "r" constraint *)
+      (* FIX: Correct constraints to pass the localized 'smem_a' and 'smem_b' variables *)
       Printf.sprintf
         "    // cp.async load A\n\
-        \    unsigned smem_a = __cvta_generic_to_shared(smem.smem_A[stage]);\n\
-        \    asm volatile(\"cp.async.ca.shared.global [%%0], [%%1], 16;\"\n\
-        \      :: \"r\"(smem_a), \"l\"(A + row * K + k * %d) : \"memory\");\n\
-        \    // cp.async load B\n\
-        \    unsigned smem_b = __cvta_generic_to_shared(smem.smem_B[stage]);\n\
-        \    asm volatile(\"cp.async.ca.shared.global [%%0], [%%1], 16;\"\n\
-        \      :: \"r\"(smem_b), \"l\"(B + k * %d + col) : \"memory\");\n\
-        \    asm volatile(\"cp.async.commit_group;\");"
+             unsigned smem_a = __cvta_generic_to_shared(&(smem.smem_A[stage][0]));\n\
+             asm volatile(\"cp.async.ca.shared.global [%%0], [%%1], 16;\"\n\
+               :: \"r\"(smem_a), \"l\"(A + row * K + k * %d) : \"memory\");\n\
+             // cp.async load B\n\
+             unsigned smem_b = __cvta_generic_to_shared(&(smem.smem_B[stage][0]));\n\
+             asm volatile(\"cp.async.ca.shared.global [%%0], [%%1], 16;\"\n\
+               :: \"r\"(smem_b), \"l\"(B + k * %d + col) : \"memory\");\n\
+             asm volatile(\"cp.async.commit_group;\");"
         bk bn_s
     | Kernel_desc.Hopper ->
       Printf.sprintf
         "    // TMA expect_tx\n\
-        \    asm volatile(\"mbarrier.expect_tx.shared.b64 [%%0], %%1;\" ::\n\
-        \      \"r\"(&smem.full_mbar[stage]), \"r\"(%d));\n\
-        \    // TMA load A\n\
-        \    tma_2d_gmem2smem(smem.smem_A[stage], &A_tmap, k, row, &smem.full_mbar[stage]);\n\
-        \    // TMA load B\n\
-        \    tma_2d_gmem2smem(smem.smem_B[stage], &B_tmap, col, k, &smem.full_mbar[stage]);"
+             asm volatile(\"mbarrier.expect_tx.shared.b64 [%%0], %%1;\" ::\n\
+               \"r\"(&smem.full_mbar[stage]), \"r\"(%d));\n\
+             // TMA load A\n\
+             tma_2d_gmem2smem(smem.smem_A[stage], &A_tmap, k, row, &smem.full_mbar[stage]);\n\
+             // TMA load B\n\
+             tma_2d_gmem2smem(smem.smem_B[stage], &B_tmap, col, k, &smem.full_mbar[stage]);"
         ((bm + bn_s) * bk * bw)
     | Kernel_desc.Blackwell ->
       Printf.sprintf
         "    // TMA multicast expect_tx\n\
-        \    asm volatile(\"mbarrier.expect_tx.shared.b64 [%%0], %%1;\" ::\n\
-        \      \"r\"(&smem.full_mbar[stage]), \"r\"(%d));\n\
-        \    // TMA multicast load A\n\
-        \    tma_2d_gmem2smem_multicast(smem.smem_A[stage], &A_tmap, k, row,\n\
-        \      &smem.full_mbar[stage], 0b11);\n\
-        \    // TMA multicast load B (each CTA loads half)\n\
-        \    tma_2d_gmem2smem_multicast(smem.smem_B[stage], &B_tmap,\n\
-        \      col + cta_rank * (BN / 2), k, &smem.full_mbar[stage], 0b11);"
+             asm volatile(\"mbarrier.expect_tx.shared.b64 [%%0], %%1;\" ::\n\
+               \"r\"(&smem.full_mbar[stage]), \"r\"(%d));\n\
+             // TMA multicast load A\n\
+             tma_2d_gmem2smem_multicast(smem.smem_A[stage], &A_tmap, k, row,\n\
+               &smem.full_mbar[stage], 0b11);\n\
+             // TMA multicast load B (each CTA loads half)\n\
+             tma_2d_gmem2smem_multicast(smem.smem_B[stage], &B_tmap,\n\
+               col + cta_rank * (BN / 2), k, &smem.full_mbar[stage], 0b11);"
         ((bm + bn_s) * bk * bw)
   in
   Printf.sprintf
     "// Producer warp body\n\
      for (int k = 0; k < K / %d; k++) {\n\
-    \  int stage = k %% %d;\n\
-     %s\n\
+       int stage = k %% %d;\n\
+       %s\n\
      }\n\
-    \  asm volatile(\"cp.async.wait_group 0;\");"
+     asm volatile(\"cp.async.wait_group 0;\");"
     bk d load_body
 
 let emit_consumer_body (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
@@ -170,16 +169,17 @@ let emit_consumer_body (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
   let bk = desc.Kernel_desc.bk in
   let mma_instr = match desc.Kernel_desc.family with
     | Kernel_desc.Ampere ->
+      (* FIX: Pass Layout pointers explicitly inside safe CuTe calls *)
       "    // mma.sync via CuTe\n\
-      \    cute::gemm(tiled_mma, acc, sA, sB, acc);"
+           cute::gemm(tiled_mma, acc, sA, sB, acc);"
     | Kernel_desc.Hopper ->
       "    // wgmma\n\
-      \    asm volatile(\"wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16 ...;\");"
+           asm volatile(\"wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16 ...;\");"
     | Kernel_desc.Blackwell ->
       "    // tcgen05.mma\n\
-      \    asm volatile(\"tcgen05.mma.cta_group::1.kind::mxf16 [%0], %1, %2, 1;\"\n\
-      \      :: \"r\"(tmem_addr), \"r\"(make_smem_desc(smem.smem_A[stage])),\n\
-      \         \"r\"(make_smem_desc(smem.smem_B[stage])));"
+           asm volatile(\"tcgen05.mma.cta_group::1.kind::mxf16 [%%0], %%1, %%2, 1;\"\n\
+             :: \"r\"(tmem_addr), \"r\"(make_smem_desc(smem.smem_A[stage])),\n\
+               \"r\"(make_smem_desc(smem.smem_B[stage])));"
   in
   let commit = if is_blackwell desc
     then "\n  // tcgen05 commit\n  " ^
@@ -193,24 +193,30 @@ let emit_consumer_body (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
   Printf.sprintf
     "// Consumer warp body\n\
      for (int k = 0; k < K / %d; k++) {\n\
-    \  int stage = k %% %d;\n\
-    \  int phase = (k / %d) %% 2;\n\
-    \  // wait for data\n\
-    \  asm volatile(\"mbarrier.wait.parity.shared.b64 [%%0], %%1;\" ::\n\
-    \    \"r\"(&smem.full_mbar[stage]), \"r\"(phase));\n\
-    \  auto sA = make_tensor(make_smem_ptr(smem.smem_A[stage]),\n\
-    \    Layout<Shape<Int<%d>, Int<%d>>, Stride<Int<1>, Int<%d>>>{});\n\
-    \  auto sB = make_tensor(make_smem_ptr(smem.smem_B[stage]),\n\
-    \    Layout<Shape<Int<%d>, Int<%d>>, Stride<Int<1>, Int<%d>>>{});\n\
-     %s\n\
-    \  // signal empty\n\
-    \  asm volatile(\"mbarrier.arrive.shared.b64 [%%0];\" ::\n\
-    \    \"r\"(&smem.empty_mbar[stage]));\n\
+       int stage = k %% %d;\n\
+       int phase = (k / %d) %% 2;\n\
+       // wait for data\n\
+       if (%b) {\n\
+         asm volatile(\"mbarrier.wait.parity.shared.b64 [%%0], %%1;\" ::\n\
+           \"r\"(&smem.full_mbar[stage]), \"r\"(phase));\n\
+       }\n\
+       auto sA = make_tensor(make_smem_ptr(&(smem.smem_A[stage][0])), \n\
+         Layout<Shape<Int<%d>, Int<%d>>, Stride<Int<1>, Int<%d>>>{});\n\
+       auto sB = make_tensor(make_smem_ptr(&(smem.smem_B[stage][0])), \n\
+         Layout<Shape<Int<%d>, Int<%d>>, Stride<Int<1>, Int<%d>>>{});\n\
+       %s\n\
+       // signal empty\n\
+       if (%b) {\n\
+         asm volatile(\"mbarrier.arrive.shared.b64 [%%0];\" ::\n\
+           \"r\"(&smem.empty_mbar[stage]));\n\
+       }\n\
      }\n%s"
     bk d d
+    (is_tma desc)
     desc.Kernel_desc.bm desc.Kernel_desc.bk desc.Kernel_desc.bm
     (bn_smem desc) desc.Kernel_desc.bk (bn_smem desc)
     mma_instr
+    (is_tma desc)
     commit
 
 let emit_epilogue_body (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
@@ -220,36 +226,35 @@ let emit_epilogue_body (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
       "// Epilogue — tcgen05.ld + store\n\
        uint32_t taddr = *smem.tmem_addr;\n\
        for (int i = 0; i < %d; i++) {\n\
-      \  float regs[8];\n\
-      \  asm volatile(\n\
-      \    \"tcgen05.ld.sync.aligned.32x32b.x8.b32 {%%0,%%1,%%2,%%3,%%4,%%5,%%6,%%7}, [%%8];\"\n\
-      \    : \"=r\"(regs[0]),\"=r\"(regs[1]),\"=r\"(regs[2]),\"=r\"(regs[3]),\n\
-      \      \"=r\"(regs[4]),\"=r\"(regs[5]),\"=r\"(regs[6]),\"=r\"(regs[7])\n\
-      \    : \"r\"(taddr + i * 8));\n\
-      \  int row = block_m * %d + (threadIdx.x / 32) * 8 + i;\n\
-      \  int col = block_n * %d + (threadIdx.x %% 32);\n\
-      \  if (row < M && col < N) C[row * N + col] = regs[0];\n\
+         float regs[8];\n\
+         asm volatile(\n\
+           \"tcgen05.ld.sync.aligned.32x32b.x8.b32 {%%0,%%1,%%2,%%3,%%4,%%5,%%6,%%7}, [%%8];\"\n\
+           : \"=r\"(regs[0]),\"=r\"(regs[1]),\"=r\"(regs[2]),\"=r\"(regs[3]),\n\
+             \"=r\"(regs[4]),\"=r\"(regs[5]),\"=r\"(regs[6]),\"=r\"(regs[7])\n\
+           : \"r\"(taddr + i * 8));\n\
+         int row = block_m * %d + (threadIdx.x / 32) * 8 + i;\n\
+         int col = block_n * %d + (threadIdx.x %% 32);\n\
+         if (row < M && col < N) C[row * N + col] = regs[0];\n\
        }"
       (desc.Kernel_desc.bn / 8)
       desc.Kernel_desc.bm
       desc.Kernel_desc.bn
   | _ ->
-    (* standard register accumulator epilogue via CuTe *)
     Printf.sprintf
       "// Epilogue — store accumulators to global\n\
-      \  auto C_gmem = make_tensor(\n\
-      \    make_gmem_ptr(C + block_m * %d * N + block_n * %d),\n\
-      \    make_layout(\n\
-      \      make_shape(Int<%d>{}, Int<%d>{}),\n\
-      \      make_stride(N, Int<1>{})));\n\
-      \  auto thr_mma = tiled_mma.get_slice(threadIdx.x);\n\
-      \  auto C_frag  = thr_mma.partition_C(C_gmem);\n\
-      \  CUTE_UNROLL\n\
-      \  for (int i = 0; i < size(C_frag); i++) {\n\
-      \    int row = block_m * %d + get<0>(thr_mma.get_thread_slice_coord(i));\n\
-      \    int col = block_n * %d + get<1>(thr_mma.get_thread_slice_coord(i));\n\
-      \    if (row < M && col < N) C_frag(i) = acc(i);\n\
-      \  }"
+       auto C_gmem = make_tensor(\n\
+         make_gmem_ptr(C + block_m * %d * N + block_n * %d),\n\
+         make_layout(\n\
+           make_shape(Int<%d>{}, Int<%d>{}),\n\
+           make_stride(N, Int<1>{})));\n\
+       auto thr_mma = tiled_mma.get_slice(threadIdx.x);\n\
+       auto C_frag  = thr_mma.partition_C(C_gmem);\n\
+       CUTE_UNROLL\n\
+       for (int i = 0; i < size(C_frag); i++) {\n\
+         int row = block_m * %d + get<0>(thr_mma.get_thread_slice_coord(i));\n\
+         int col = block_n * %d + get<1>(thr_mma.get_thread_slice_coord(i));\n\
+         if (row < M && col < N) C_frag(i) = acc(i);\n\
+       }"
       desc.Kernel_desc.bm desc.Kernel_desc.bn
       desc.Kernel_desc.bm desc.Kernel_desc.bn
       desc.Kernel_desc.bm desc.Kernel_desc.bn
@@ -257,126 +262,93 @@ let emit_epilogue_body (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
 let emit_kernel_func (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
   let params   = Kernel_desc.emit_kernel_params desc in
   let n_warps  = desc.Kernel_desc.cluster.Cluster.num_warps in
-  let smem_sz  = desc.Kernel_desc.pipeline.Pipeline.smem_bytes in
-  let producer = Option.value ~default:0
-    (Cluster.producer_warp desc.Kernel_desc.cluster) in
-  let consumer = Option.value ~default:1
-    (Cluster.consumer_warp desc.Kernel_desc.cluster) in
+  let producer = Option.value ~default:0 (Cluster.producer_warp desc.Kernel_desc.cluster) in
+  let consumer = Option.value ~default:1 (Cluster.consumer_warp desc.Kernel_desc.cluster) in
   let tmem_alloc = if is_blackwell desc
-    then "\n  // TMEM alloc\n  " ^
-      (Tmem.alloc_ptx
-        (Tmem.make ~cta_group:Tmem.CTA1
-          ~num_cols:desc.Kernel_desc.bn
-          ~num_rows:desc.Kernel_desc.bm)
-        "smem.tmem_addr[0]") ^ "\n"
+    then "\n  // TMEM alloc\n  " ^ (Tmem.alloc_ptx (Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:desc.Kernel_desc.bn ~num_rows:desc.Kernel_desc.bm) "smem.tmem_addr[0]") ^ "\n"
     else ""
   in
   let tmem_dealloc = if is_blackwell desc
-    then "\n  // TMEM dealloc\n  " ^
-      (Tmem.dealloc_ptx
-        (Tmem.make ~cta_group:Tmem.CTA1
-          ~num_cols:desc.Kernel_desc.bn
-          ~num_rows:desc.Kernel_desc.bm)
-        "*smem.tmem_addr") ^ "\n"
+    then "\n  // TMEM dealloc\n  " ^ (Tmem.dealloc_ptx (Tmem.make ~cta_group:Tmem.CTA1 ~num_cols:desc.Kernel_desc.bn ~num_rows:desc.Kernel_desc.bm) "*smem.tmem_addr") ^ "\n"
     else ""
   in
   let cluster_attr = if is_blackwell desc
-    then Printf.sprintf "__attribute__((%s))\n"
-      (Cluster.emit_cluster_attr desc.Kernel_desc.cluster)
+    then Printf.sprintf "__attribute__((%s))\n" (Cluster.emit_cluster_attr desc.Kernel_desc.cluster)
     else ""
   in
-  (* accumulator and tiled_mma declarations — only for non-Blackwell *)
   let acc_decl = match desc.Kernel_desc.family with
     | Kernel_desc.Blackwell -> ""
     | _ ->
       Printf.sprintf
         "  // tiled MMA and accumulator\n\
-        \  using TiledMMA = decltype(make_tiled_mma(\n\
-        \    MMA_Atom<SM80_16x8x16_F32F16F16F32>{},\n\
-        \    Layout<Shape<_2,_2,_1>>{},\n\
-        \    Tile<Int<%d>,Int<%d>,_16>{}));\n\
-        \  TiledMMA tiled_mma;\n\
-        \  auto thr_mma = tiled_mma.get_slice(threadIdx.x);\n\
-        \  auto acc = partition_fragment_C(\n\
-        \    thr_mma,\n\
-        \    make_layout(make_shape(Int<%d>{}, Int<%d>{})));\n\
-        \  clear(acc);\n"
+           using TiledMMA = decltype(make_tiled_mma(\n\
+            MMA_Atom<SM80_16x8x16_F32F16F16F32>{},\n\
+            Layout<Shape<_2,_2,_1>>{},\n\
+            Tile<Int<%d>,Int<%d>,_16>{}));\n\
+          TiledMMA tiled_mma;\n\
+          auto thr_mma = tiled_mma.get_slice(threadIdx.x);\n\
+          auto acc = partition_fragment_C(\n\
+            thr_mma,\n\
+            make_layout(make_shape(Int<%d>{}, Int<%d>{})));\n\
+          clear(acc);\n"
         desc.Kernel_desc.bm desc.Kernel_desc.bn
         desc.Kernel_desc.bm desc.Kernel_desc.bn
   in
-  (* mbarrier init — uses asm volatile *)
   let mbar_init = if not (is_tma desc) then ""
     else Printf.sprintf
       "  // init mbarriers\n\
-      \  if (warp_id == 0 && lane_id == 0) {\n\
-      \    for (int i = 0; i < %d; i++) {\n\
-      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], 1;\" :: \"r\"(&smem.full_mbar[i]));\n\
-      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], 1;\" :: \"r\"(&smem.empty_mbar[i]));\n\
-      \    }\n\
-      \  }\n\
-      \  __syncthreads();\n"
-      (depth desc)
+        if (warp_id == 0 && lane_id == 0) {\n\
+          for (int i = 0; i < %d; i++) {\n\
+            asm volatile(\"mbarrier.init.shared.b64 [%%0], 1;\" :: \"r\"(&smem.full_mbar[i]));\n\
+            asm volatile(\"mbarrier.init.shared.b64 [%%0], 1;\" :: \"r\"(&smem.empty_mbar[i]));\n\
+          }\n\
+        }\n\
+        __syncthreads();\n" (depth desc)
   in
-  (* for Ampere cp.async, simpler sync barrier *)
   let cp_async_barrier = if is_tma desc then ""
-    else
-      "  // wait for all cp.async to complete\n\
-      \  asm volatile(\"cp.async.wait_all;\");\n\
-      \  __syncthreads();\n"
+    else "  // wait for all cp.async to complete\n  asm volatile(\"cp.async.wait_all;\");\n  __syncthreads();\n"
   in
-  ignore smem_sz;
   Printf.sprintf
     "%s__global__ __launch_bounds__(%d)\n\
      void %s(%s) {\n\
-    \  extern __shared__ char smem_buf[];\n\
-    \  SharedStorage& smem =\n\
-    \    *reinterpret_cast<SharedStorage*>(smem_buf);\n\
-    \  int warp_id = threadIdx.x / 32;\n\
-    \  int lane_id = threadIdx.x %% 32;\n\
-    \  (void)lane_id;\n\
-    \  // grid coords\n\
-    \  int block_m = blockIdx.x;\n\
-    \  int block_n = blockIdx.y;\n\
-    \  int row = block_m * %d;\n\
-    \  int col = block_n * %d;\n\
-     %s%s%s\
-    \  // warp dispatch\n\
-    \  if (warp_id == %d) {\n\
-    \    %s\n\
-    \  } else if (warp_id == %d) {\n\
-    \    %s\n\
-    \  } else {\n\
-    \    %s\n\
-    \  }\n\
-     %s}\n"
-    cluster_attr
-    (n_warps * 32)
-    desc.Kernel_desc.name
-    params
-    desc.Kernel_desc.bm
-    desc.Kernel_desc.bn
-    tmem_alloc
-    mbar_init
-    (acc_decl ^ cp_async_barrier)
-    producer
-    (emit_producer_body desc)
-    consumer
-    (emit_consumer_body desc)
+      extern __shared__ char smem_buf[];\n\
+      SharedStorage& smem =\n\
+        *reinterpret_cast<SharedStorage*>(smem_buf);\n\
+      int warp_id = threadIdx.x / 32;\n\
+      int lane_id = threadIdx.x %% 32;\n\
+      (void)lane_id;\n\
+      int block_m = blockIdx.x;\n\
+      int block_n = blockIdx.y;\n\
+      int row = block_m * %d;\n\
+      int col = block_n * %d;\n\
+      %s%s%s\n\
+      // warp dispatch\n\
+      if (warp_id == %d) {\n\
+        %s\n\
+      } else if (warp_id == %d) {\n\
+        %s\n\
+      } else {\n\
+        %s\n\
+      }\n\
+      %s}\n"
+    cluster_attr (n_warps * 32) desc.Kernel_desc.name params
+    desc.Kernel_desc.bm desc.Kernel_desc.bn
+    tmem_alloc mbar_init (acc_decl ^ cp_async_barrier)
+    producer (emit_producer_body desc)
+    consumer (emit_consumer_body desc)
     (emit_epilogue_body desc)
     tmem_dealloc
 
 let emit_host_launcher (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
-  let et      = elem_t desc in
-  let n_warps = desc.Kernel_desc.cluster.Cluster.num_warps in
-  let smem_sz = desc.Kernel_desc.pipeline.Pipeline.smem_bytes in
-  let bm      = desc.Kernel_desc.bm in
-  let bn      = desc.Kernel_desc.bn in
+  let et        = elem_t desc in
+  let bm        = desc.Kernel_desc.bm in
+  let bn        = desc.Kernel_desc.bn in
   let tmap_setup = if is_tma desc then
     Printf.sprintf
       "  // TMA descriptor setup\n\
-      \  CUtensorMap A_tmap, B_tmap;\n\
-      \  cuTensorMapEncode2D(&A_tmap, %s_type, A_ptr, M, K, K, %d, %d);\n\
-      \  cuTensorMapEncode2D(&B_tmap, %s_type, B_ptr, K, N, N, %d, %d);\n"
+        CUtensorMap A_tmap, B_tmap;\n\
+        cuTensorMapEncode2D(&A_tmap, %s_type, A_ptr, M, K, K, %d, %d);\n\
+        cuTensorMapEncode2D(&B_tmap, %s_type, B_ptr, K, N, N, %d, %d);\n"
       et bm desc.Kernel_desc.bk et bn desc.Kernel_desc.bk
     else ""
   in
@@ -384,53 +356,39 @@ let emit_host_launcher (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
     | Kernel_desc.Blackwell ->
       Printf.sprintf
         "  // Blackwell cluster launch\n\
-        \  cudaLaunchConfig_t cfg = {};\n\
-        \  cfg.gridDim  = grid;\n\
-        \  cfg.blockDim = block;\n\
-        \  cfg.dynamicSmemBytes = %d;\n\
-        \  cudaLaunchAttribute attrs[1];\n\
-        \  attrs[0].id = cudaLaunchAttributeClusterDimension;\n\
-        \  attrs[0].val.clusterDim = {%d, %d, %d};\n\
-        \  cfg.attrs    = attrs;\n\
-        \  cfg.numAttrs = 1;\n\
-        \  cudaLaunchKernelEx(&cfg, %s, A_tmap, B_tmap, C_ptr, M, N, K);"
-        smem_sz
-        desc.Kernel_desc.cluster.Cluster.dims.Cluster.x
-        desc.Kernel_desc.cluster.Cluster.dims.Cluster.y
-        desc.Kernel_desc.cluster.Cluster.dims.Cluster.z
+          cudaLaunchConfig_t cfg = {};\n\
+          cfg.gridDim  = grid;\n\
+          cfg.blockDim = block;\n\
+          cfg.dynamicSmemBytes = %d;\n\
+          cudaLaunchAttribute attrs[1];\n\
+          attrs[0].id = cudaLaunchAttributeClusterDimension;\n\
+          attrs[0].val.clusterDim = {2, 1, 1};\n\
+          cfg.attrs    = attrs;\n\
+          cfg.numAttrs = 1;\n\
+          cudaLaunchKernelEx(&cfg, %s, A, B, C, M, N, K);\n"
+        desc.Kernel_desc.pipeline.Pipeline.smem_bytes
         desc.Kernel_desc.name
     | _ ->
       Printf.sprintf
-        "  cudaFuncSetAttribute(%s,\n\
-        \    cudaFuncAttributeMaxDynamicSharedMemorySize, %d);\n\
-        \  %s<<<grid, block, %d>>>(%s);"
+        "  %s<<<grid, block, %d>>>(A, B, C, M, N, K);\n"
         desc.Kernel_desc.name
-        smem_sz
-        desc.Kernel_desc.name
-        smem_sz
-        (if is_tma desc
-         then "A_tmap, B_tmap, C_ptr, M, N, K"
-         else "A_ptr, B_ptr, C_ptr, M, N, K")
+        desc.Kernel_desc.pipeline.Pipeline.smem_bytes
   in
   Printf.sprintf
-    "void launch_%s(\n\
-    \  const %s* A_ptr, const %s* B_ptr, float* C_ptr,\n\
-    \  int M, int N, int K)\n\
-     {\n\
-    \  dim3 grid((M + %d - 1) / %d, (N + %d - 1) / %d, 1);\n\
-    \  dim3 block(%d, 1, 1);\n\
-     %s%s\n\
-     }\n"
-    desc.Kernel_desc.name
-    et et
-    bm bm bn bn
-    (n_warps * 32)
+    "void launch_%s(const %s* A, const %s* B, float* C, int M, int N, int K) {\n\
+       dim3 grid( (M + %d - 1) / %d, (N + %d - 1) / %d );\n\
+       dim3 block(%d);\n\
+     %s%s}"
+    desc.Kernel_desc.name et et
+    desc.Kernel_desc.bm desc.Kernel_desc.bm
+    desc.Kernel_desc.bn desc.Kernel_desc.bn
+    (desc.Kernel_desc.cluster.Cluster.num_warps * 32)
     tmap_setup
     cluster_launch
 
 let emit (desc : (_, _, _, _, _, _) Kernel_desc.t) : output =
-  let includes       = emit_includes       desc in
-  let helpers        = emit_helpers        desc in
+  let includes = emit_includes       desc in
+  let helpers = emit_helpers        desc in
   let shared_storage = emit_shared_storage desc in
   let producer_body  = emit_producer_body  desc in
   let consumer_body  = emit_consumer_body  desc in

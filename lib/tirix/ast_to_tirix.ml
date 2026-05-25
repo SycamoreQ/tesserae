@@ -84,7 +84,7 @@ let infer_copy_kind (ctx : ctx)
      | Kernel_ast.SM100 -> Tirix.TmaMulticast)
   | "shared", "register" -> Tirix.SmemToReg
   | "register", "shared" -> Tirix.RegToSmem
-  | "register", "global" -> Tirix.RegToGlobal
+  | "register", _ -> Tirix.RegToSmem
   | _ -> Tirix.CpAsync
 
 
@@ -288,7 +288,7 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
 
 
 let lower (k : Kernel_ast.kernel) : Tirix.tirix =
-  (* collect all tensors referenced in the kernel *)
+  (* First collect all tensors referenced in the kernel *)
   let tensors = collect_tensors k.Kernel_ast.body [] in
   let ctx = {
     arch = k.Kernel_ast.arch
@@ -316,7 +316,7 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   { Tirix.name = k.Kernel_ast.name
   ; family = lower_family k.Kernel_ast.arch
   ; params = lower_params ctx k
-  ; tensors
+  ; tensors  (* Include collected tensors in the output *)
   ; smem_bytes =  0
   ; pipeline_depth = k.Kernel_ast.stages
   ; bm = k.Kernel_ast.tile.Kernel_ast.m

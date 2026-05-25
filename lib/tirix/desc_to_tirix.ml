@@ -53,7 +53,7 @@ let make_global_tensor name elem_type =
     tensor_swizzle = Swizzle.make 0 0 0;
   }
 
-let make_shared_tensor name elem_type bm bn bk depth =
+let make_shared_tensor name elem_type bm bk depth =
   let i n = Modes.Int n in
   let tup ts = Modes.Tuple ts in
   let lay s d = Layout.make s d in
@@ -75,8 +75,8 @@ let construct_smem_tensors (desc : (_, _, _, _, _, _) Kernel_desc.t) =
   let bk = desc.Kernel_desc.bk in
   let bn_s = bn_smem desc in
   let d = desc.Kernel_desc.pipeline.Pipeline.depth in
-  let smem_a = make_shared_tensor "smem_A" elem bm bk bk d in
-  let smem_b = make_shared_tensor "smem_B" elem bn_s bk bk d in
+  let smem_a = make_shared_tensor "smem_A" elem bm bk d in
+  let smem_b = make_shared_tensor "smem_B" elem bn_s bk d in
   let tensors = [ ("smem_A", smem_a); ("smem_B", smem_b) ] in
   if is_tma desc then
     let mbar_full = Tensor {
@@ -101,28 +101,35 @@ let construct_smem_tensors (desc : (_, _, _, _, _, _) Kernel_desc.t) =
 
 
 let construct_vars (desc : (_, _, _, _, _, _) Kernel_desc.t) =
-  let warp_id  = mk_var "warp_id"  S32 () in
-  let lane_id  = mk_var "lane_id"  S32 () in
-  let block_m  = mk_var "block_m"  S32 () in
-  let block_n  = mk_var "block_n"  S32 () in
+  let warp_id = mk_var "warp_id" S32 () in
+  let lane_id = mk_var "lane_id" S32 () in
+  let block_m = mk_var "block_m" S32 () in
+  let block_n = mk_var "block_n" S32 () in
   let row = mk_var "row" S32 () in
   let col = mk_var "col" S32 () in
-  let k_loop = mk_var "k" S32 ~mut:true () in
-  let stage = mk_var "stage" S32 ~mut:true () in
-  let phase = mk_var "phase" S32 ~mut:true () in
-  let base_vars =
-    [ warp_id; lane_id; block_m; block_n; row; col; k_loop; stage; phase ]
+  let base_vars = [ warp_id; lane_id; block_m; block_n; row; col ] in
+
+  let tma_vars =
+    if is_tma desc then
+      let full_mbar  = mk_var "full_mbar"  U64 () in
+      let empty_mbar = mk_var "empty_mbar" U64 () in
+      [ full_mbar; empty_mbar ]
+    else
+      []
   in
-  if is_blackwell desc then
-    let tmem_addr = mk_var "tmem_addr" U32 ~mut:true () in
-    let cta_rank  = mk_var "cta_rank"  S32 () in
-    base_vars @ [ tmem_addr; cta_rank ]
-  else if is_tma desc then
-    let full_mbar  = mk_var "full_mbar"  U64 () in
-    let empty_mbar = mk_var "empty_mbar" U64 () in
-    base_vars @ [ full_mbar; empty_mbar ]
-  else
-    base_vars
+  let arch_vars =
+    if is_blackwell desc then
+      let tmem_addr = mk_var "tmem_addr" U32 ~mut:true () in
+      let cta_rank  = mk_var "cta_rank"  S32 () in
+      let n_loads = desc.Kernel_desc.bn / 8 in
+      let regs = List.init n_loads ~f:(fun i ->
+        mk_var (Printf.sprintf "reg_%d" i) F32 ())
+      in
+      [ tmem_addr; cta_rank ] @ regs
+    else
+      []
+  in
+  base_vars @ tma_vars @ arch_vars
 
 let construct_params (desc : (_, _, _, _, _, _) Kernel_desc.t) =
   let elem = elem_type_of desc in
@@ -192,7 +199,7 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
       SOp (Copy {
         copy_kind = TmaLoad;
         src_tensor = make_global_tensor "gmem" (elem_type_of desc);
-        dst_tensor = make_shared_tensor "smem" (elem_type_of desc) 128 128 32 4;
+        dst_tensor = make_shared_tensor "smem" (elem_type_of desc) 128 32 4;
         pred_expr = None;
         mbar_var= Some (mk_var "mbar" U64 ());
       });
@@ -211,7 +218,7 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
       SOp (Copy {
         copy_kind  = TmaMulticast;
         src_tensor = make_global_tensor "gmem" (elem_type_of desc);
-        dst_tensor = make_shared_tensor "smem" (elem_type_of desc) 128 128 32 4;
+        dst_tensor = make_shared_tensor "smem" (elem_type_of desc) 128 32 4;
         pred_expr = None;
         mbar_var = Some (mk_var "mbar" U64 ());
       });
@@ -227,8 +234,8 @@ let construct_producer_body
     (vars : var list)
     (smem : (string * packed_tensor) list) =
   let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
-  let k_var = find "k" in
-  let stage_var = find "stage" in
+  let k_var = mk_var "k" S32 ~mut:true () in
+  let stage_var = mk_var "stage" S32 ~mut:true () in
   let bk = desc.Kernel_desc.bk in
   let depth = desc.Kernel_desc.pipeline.Pipeline.depth in
   let _, smem_a = List.find_exn smem ~f:(fun (n,_) -> String.equal n "smem_A") in
@@ -236,7 +243,7 @@ let construct_producer_body
   let a_tensor = make_global_tensor "A" (elem_type_of desc) in
   let b_tensor = make_global_tensor "B" (elem_type_of desc) in
   let let_stage =
-    SLet (stage_var,
+    SAssign (stage_var,
       Expr (Arith (Mod, Var k_var, i32 depth)))
   in
   let copy_ops = match is_tma desc, is_blackwell desc with
@@ -295,6 +302,7 @@ let construct_producer_body
   in
   let loop_body = let_stage :: copy_ops in
   SWarpGroup (Cluster.Producer, [
+    SLetMut (stage_var, Expr (Const (S32, 0l)));
     SFor {
       var = k_var;
       start = i32 0;
@@ -311,9 +319,9 @@ let construct_consumer_body
     (vars : var list)
     (smem : (string * packed_tensor) list) =
   let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
-  let k_var = find "k" in
-  let stage_var = find "stage" in
-  let phase_var = find "phase" in
+  let k_var = mk_var "k" S32 ~mut:true () in
+  let stage_var = mk_var "stage" S32 ~mut:true () in
+  let phase_var = mk_var "phase" S32 ~mut:true () in
   let bk = desc.Kernel_desc.bk in
   let depth = desc.Kernel_desc.pipeline.Pipeline.depth in
   let _, smem_a = List.find_exn smem ~f:(fun (n,_) -> String.equal n "smem_A") in
@@ -325,10 +333,10 @@ let construct_consumer_body
     | Kernel_desc.Blackwell -> Sm100Tcgen05
   in
   let let_stage =
-    SLet (stage_var, Expr (Arith (Mod, Var k_var, i32 depth)))
+    SAssign (stage_var, Expr (Arith (Mod, Var k_var, i32 depth)))
   in
   let let_phase =
-    SLet (phase_var,
+    SAssign (phase_var,
       Expr (Arith (Mod,
         Arith (Div, Var k_var, i32 depth),
         i32 2)))
@@ -362,6 +370,8 @@ let construct_consumer_body
     @ commit_op
   in
   SWarpGroup (Cluster.Consumer, [
+    SLetMut (stage_var, Expr (Const (S32, 0l)));
+    SLetMut (phase_var, Expr (Const (S32, 0l)));
     SFor {
       var = k_var;
       start = i32 0;
@@ -458,7 +468,8 @@ let tmem_dealloc_op
 
 
 let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
-  let tensors = construct_smem_tensors desc in
+  let acc_tensor = make_global_tensor "acc" Elemtype.Float32 in
+  let tensors = ("acc"  , acc_tensor):: construct_smem_tensors desc in
   let vars = construct_vars desc in
   let params = construct_params desc in
   let helpers  = construct_helpers desc in
@@ -468,19 +479,62 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
   let epilogue = construct_epilogue_body desc vars in
   let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
   let warp_id = find "warp_id" in
+
+  (* Get warp IDs from cluster *)
   let prod_warp = Option.value ~default:0
     (Cluster.producer_warp desc.Kernel_desc.cluster) in
   let cons_warp = Option.value ~default:1
     (Cluster.consumer_warp desc.Kernel_desc.cluster) in
+  let epi_warps = Cluster.epilogue_warps desc.Kernel_desc.cluster in
+  let sched_warp = Cluster.scheduler_warp desc.Kernel_desc.cluster in
+
+  let is_producer = Cmp (Eq, Var warp_id, i32 prod_warp) in
+  let is_consumer = Cmp (Eq, Var warp_id, i32 cons_warp) in
+  let is_epilogue = List.fold epi_warps ~init:(Const (Bool, false))
+    ~f:(fun acc w -> Logic (Or, acc, Cmp (Eq, Var warp_id, i32 w))) in
+
   let warp_dispatch =
-    SIf (Cmp (Eq, Var warp_id, i32 prod_warp),
-      [ producer ],
-      [ SIf (Cmp (Eq, Var warp_id, i32 cons_warp),
-          [ consumer ],
-          [ epilogue ]) ])
+    match sched_warp with
+    | Some sched_id ->
+      (* Blackwell: include scheduler warp *)
+      let is_scheduler = Cmp (Eq, Var warp_id, i32 sched_id) in
+      let scheduler_body = SWarpGroup (Cluster.Scheduler, [SEmpty]) in
+      SIf (is_producer,
+        [ producer ],
+        [ SIf (is_consumer,
+            [ consumer ],
+            [ SIf (is_epilogue,
+                [ epilogue ],
+                [ SIf (is_scheduler,
+                    [ scheduler_body ],
+                    [ SEmpty ])])])])
+    | None ->
+      (* Ampere/Hopper: no scheduler warp *)
+      SIf (is_producer,
+        [ producer ],
+        [ SIf (is_consumer,
+            [ consumer ],
+            [ SIf (is_epilogue,
+                [ epilogue ],
+                [ SEmpty ])])])
   in
+
   let var_decls = List.map vars ~f:(fun v ->
-    SLet (v, Expr (Const (S32, 0l)))) in
+    let init = match v.var_type with
+      | Scalar S32 -> Expr (Const (S32, 0l))
+      | Scalar U32 -> Expr (Const (U32, 0l))
+      | Scalar U64 -> Expr (Const (U64, 0L))
+      | Scalar F16 -> Expr (Const (F16, 0.0))
+      | Scalar F32 -> Expr (Const (F32, 0.0))
+      | Scalar Bool -> Expr (Const (Bool, false))
+      | _ -> Expr (Const (S32, 0l))  (* fallback *)
+    in
+    if v.var_mutable then
+      SLetMut (v, init)
+    else
+      SLet (v, init)
+  ) in
+
   let alloc   = Option.to_list (tmem_alloc_op   desc vars) in
   let dealloc = Option.to_list (tmem_dealloc_op desc vars) in
   let body =
