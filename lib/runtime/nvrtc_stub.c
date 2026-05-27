@@ -148,7 +148,7 @@ CAMLprim value caml_nvrtc_compile(value v, value opts_list) {
   cell = opts_list;
   for (int i = 0; i < n; i++) {
     opts[i] = String_val(Field(cell, 0));
-    cell    = Field(cell, 1);
+    cell = Field(cell, 1);
   }
 
   int rc = tesserae_nvrtc_compile(prog, opts, n);

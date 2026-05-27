@@ -12,4 +12,5 @@
 
 (test
   (name test_runtime)
-  (libraries tesserae alcotest base))
+  (libraries tesserae alcotest)
+  (link_flags (-cclib -L/usr/local/cuda/lib64 -cclib -lcuda -cclib -lcudart)))

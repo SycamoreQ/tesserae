@@ -4,12 +4,12 @@
 #include <stddef.h>
 
 typedef struct tesserae_nvrtc_program {
-  char*  source;      /* copy of the source string */
-  char*  name;        /* copy of the filename*/
-  char*  ptx;         /* PTX output — NULL until compiled */
-  char*  log;         /* compiler log — NULL until compiled */
-  int    compiled;    /* 1 if compile was called, 0 otherwise */
-  int    valid;       /* 1 if not yet destroyed */
+  char* source;      /* copy of the source string */
+  char* name;        /* copy of the filename*/
+  char* ptx;         /* PTX output — NULL until compiled */
+  char* log;         /* compiler log — NULL until compiled */
+  int compiled;    /* 1 if compile was called, 0 otherwise */
+  int valid;       /* 1 if not yet destroyed */
 
 #ifdef TESSERAE_HAVE_NVRTC
   nvrtcProgram handle; /* real nvrtc handle */

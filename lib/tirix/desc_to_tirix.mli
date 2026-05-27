@@ -28,6 +28,8 @@ val bn_smem : (_, _, _, _, _, _) Kernel_desc.t -> int
 
 val flat_layout : unit -> Layout.t
 
+val packed_atom_of_desc: (_, _, _, _, _, _) Kernel_desc.t -> Tirix.packed_mma_atom
+
 val make_global_tensor : string -> 'a Elemtype.t -> packed_tensor
 
 val construct_smem_tensors :

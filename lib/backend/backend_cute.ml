@@ -85,7 +85,7 @@ let emit_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
     String.concat ~sep:"\n\n" [smem_desc_helper; tma_load; tma_multicast]
 
 let emit_shared_storage (desc : (_, _, _, _, _, _) Kernel_desc.t) : string =
-  let et   = elem_t desc in
+  let et = elem_t desc in
   let bm   = desc.Kernel_desc.bm in
   let bk   = desc.Kernel_desc.bk in
   let bn_s = bn_smem desc in

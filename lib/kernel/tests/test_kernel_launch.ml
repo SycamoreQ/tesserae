@@ -10,28 +10,30 @@ let trivial_ptx = {|
 
 .visible .entry trivial_add(
   .param .u64 param0,
-  .param .u32 param1
+  .param .u64 param1
 )
 {
-  .reg .u64 %rd<3>;
+  .reg .u64 %rd<4>;
   .reg .u32 %r<4>;
   .reg .f32 %f<2>;
   .reg .pred %p<2>;
 
   ld.param.u64 %rd0, [param0];
-  ld.param.u32 %r0,  [param1];
+  ld.param.u64 %rd3, [param1];
 
   mov.u32 %r1, %ctaid.x;
   mov.u32 %r2, %ntid.x;
   mov.u32 %r3, %tid.x;
   mad.lo.u32 %r3, %r1, %r2, %r3;
 
-  setp.ge.u32 %p0, %r3, %r0;
+  // Convert thread index to 64-bit for the boundary check
+  cvt.u64.u32 %rd1, %r3;
+  setp.ge.u64 %p0, %rd1, %rd3;
   @%p0 bra done;
 
-  cvt.u64.u32 %rd1, %r3;
+  // Calculate byte offset correctly (thread_idx * 4 bytes for float)
   mul.wide.u32 %rd2, %r3, 4;
-  add.u64 %rd1, %rd0, %rd1;
+  add.u64 %rd1, %rd0, %rd2;
 
   ld.global.f32 %f0, [%rd1];
   add.f32 %f0, %f0, 1.0;

@@ -43,6 +43,19 @@ let bn_smem (desc : (_, _, _, _, _, _) Kernel_desc.t) =
 let flat_layout () =
   Layout.make (Modes.Int 1) (Modes.Int 1)
 
+let packed_atom_of_desc (desc : (_, _, _, _, _, _) Kernel_desc.t) : Tirix.packed_mma_atom =
+  match desc.Kernel_desc.family with
+  | Kernel_desc.Ampere ->
+    Tirix.Atom80 (Mma_atom.sm80_16x8x16_f32f16f16f32
+                    Mma_atom.ColMajor Mma_atom.RowMajor)
+  | Kernel_desc.Hopper ->
+    Tirix.Atom90 (Mma_atom.sm90_64x128x16_f32f16f16f32
+                    Mma_atom.ColMajor Mma_atom.RowMajor)
+  | Kernel_desc.Blackwell ->
+    Tirix.Atom100 (Mma_atom.sm100_128x128x16_f32f16f16f32
+                     Mma_atom.ColMajor Mma_atom.RowMajor)
+
+
 let make_global_tensor name elem_type =
   Tensor {
     tensor_name = name;
@@ -129,7 +142,10 @@ let construct_vars (desc : (_, _, _, _, _, _) Kernel_desc.t) =
     else
       []
   in
-  base_vars @ tma_vars @ arch_vars
+  let coord_k = mk_var "coord_k" S32 ~mut:true () in
+  let coord_m = mk_var "coord_m" S32 ~mut:true () in
+  let coord_n = mk_var "coord_n" S32 ~mut:true () in
+  base_vars @ tma_vars @ arch_vars @ [coord_k; coord_m; coord_n]
 
 let construct_params (desc : (_, _, _, _, _, _) Kernel_desc.t) =
   let elem = elem_type_of desc in
@@ -349,12 +365,13 @@ let construct_consumer_body
   in
   let mma_op = SOp (Mma {
     mma_kind;
+    mma_atom = packed_atom_of_desc desc;
     tensor_a = smem_a;
     tensor_b = smem_b;
     tensor_c = acc;
     smem_desc_a = None;
     smem_desc_b = None;
-    accum_flag = true;
+    accum_flag  = true;
   }) in
   let arrive_op = if is_tma desc then
     let mbar = find "empty_mbar" in
@@ -402,18 +419,19 @@ let construct_epilogue_body
     ])
   | _ ->
     let acc = make_global_tensor "acc" Elemtype.Float32 in
-    let c   = make_global_tensor "C" Elemtype.Float32 in
+    let c = make_global_tensor "C" Elemtype.Float32 in
     SWarpGroup (Cluster.Epilogue, [
-      SOp (Mma {
-        mma_kind = Sm80Mma;
-        tensor_a = acc;
-        tensor_b = acc;
-        tensor_c = c;
-        smem_desc_a = None;
-        smem_desc_b = None;
-        accum_flag = false;
-      });
-    ])
+    SOp (Mma {
+      mma_kind = Sm80Mma;
+      mma_atom = Tirix.default_atom_for_kind Sm80Mma;
+      tensor_a = acc;
+      tensor_b = acc;
+      tensor_c = c;
+      smem_desc_a = None;
+      smem_desc_b = None;
+      accum_flag = false;
+    });
+  ])
 
 let construct_mbar_init
     (desc : (_, _, _, _, _, _) Kernel_desc.t)
@@ -534,6 +552,7 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
     else
       SLet (v, init)
   ) in
+
 
   let alloc   = Option.to_list (tmem_alloc_op   desc vars) in
   let dealloc = Option.to_list (tmem_dealloc_op desc vars) in

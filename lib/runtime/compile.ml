@@ -86,6 +86,15 @@ let to_ptx (k : Kernel_ast.kernel) : (result, compile_error) Result.t =
     let opts = [
       Printf.sprintf "--include-path=%s" cutlass_path;
       "--std=c++17";
+      "-D__LP64__";
+      "-D__x86_64__";
+      "-default-device";
+      "-arch=compute_90a";
+      "--include-path=/usr/include";
+      "--include-path=/usr/include/x86_64-linux-gnu";
+      "--include-path=/usr/local/cuda/include";
+      "--include-path=/usr/local/cuda-13.0/targets/x86_64-linux/include/cccl";
+      "--include-path=/usr/lib/gcc/x86_64-linux-gnu/11/include";
     ] in
     match Nvrtc.compile_source r.source
       ~name:(r.kernel_name ^ ".cu")

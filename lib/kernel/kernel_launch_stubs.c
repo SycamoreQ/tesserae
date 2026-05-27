@@ -9,9 +9,10 @@
 #include <stdlib.h>
 
 #define CU_CHECK(rc) do { \
-  if ((rc) != CUDA_SUCCESS) { \
+  CUresult _rc = (rc); \
+  if (_rc != CUDA_SUCCESS) { \
     const char* msg; \
-    cuGetErrorString((rc), &msg); \
+    cuGetErrorString(_rc, &msg); \
     caml_failwith(msg ? msg : "CUDA driver error"); \
   } \
 } while(0)
@@ -29,8 +30,14 @@ CAMLprim value caml_launch_kernel(value fn_val, value gx, value gy, value gz,
 CAMLprim value caml_cuinit(value unit) {
   CAMLparam1(unit);
   CU_CHECK(cuInit(0));
+  CUdevice dev;
+  CU_CHECK(cuDeviceGet(&dev, 0));
+  CUcontext ctx;
+  CU_CHECK(cuCtxCreate(&ctx, NULL, 0, dev));
+
   CAMLreturn(Val_unit);
 }
+
 
 CAMLprim value caml_module_load_ptx(value ptx) {
   CAMLparam1(ptx);
@@ -62,29 +69,26 @@ CAMLprim value caml_launch_kernel_bytecode(value* argv, int argc) {
     argv[4], argv[5], argv[6], argv[7], argv[8]);
 }
 
+
 CAMLprim value caml_launch_kernel(
     value fn_val,
     value gx, value gy, value gz,
     value bx, value by, value bz,
     value smem_val,
     value args_bigarray) {
-
-  // Bigarray values do not wander during GC allocations, but standard parameters do
   CAMLparam5(fn_val, gx, gy, smem_val, args_bigarray);
   CAMLxparam4(gz, bx, by, bz);
 
   CUfunction fn = (CUfunction) Nativeint_val(fn_val);
 
-  // Extract raw pointer array and dimension boundary from Bigarray
   struct caml_ba_array* ba = Caml_ba_array_val(args_bigarray);
-  intnat n = ba->dim[0];
-  void** src_ptrs = (void**) ba->data;
+  intnat n   = ba->dim[0];
+  intnat* data = (intnat*) ba->data;
 
-  // Build the secondary reference tracking layout expected by cuLaunchKernel
+  /* params[i] must point to the i-th argument value directly */
   void** params = (void**) malloc(n * sizeof(void*));
   for (intnat i = 0; i < n; i++) {
-    // Each parameter in params must point to the actual storage layout
-    params[i] = &(src_ptrs[i]);
+    params[i] = &data[i];
   }
 
   CUresult rc = cuLaunchKernel(fn,

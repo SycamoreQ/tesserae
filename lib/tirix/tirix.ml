@@ -2,6 +2,7 @@ open Base
 open Tesserae_core
 open Tesserae_pipeline
 open Tesserae_kernel
+open Tesserae_atoms
 
 module Type_id = struct
   type _ witness = ..
@@ -143,8 +144,30 @@ type copy = {
 
 type mma_kind = Sm80Mma | Sm90Wgmma | Sm100Tcgen05
 
+
+type packed_mma_atom =
+  | Atom80  : (Mma_atom.sm80,  'a, 'b, 'c, 'd) Mma_atom.t -> packed_mma_atom
+  | Atom90  : (Mma_atom.sm90,  'a, 'b, 'c, 'd) Mma_atom.t -> packed_mma_atom
+  | Atom100 : (Mma_atom.sm100, 'a, 'b, 'c, 'd) Mma_atom.t -> packed_mma_atom
+
+
+let default_atom_for_kind = function
+  | Sm80Mma ->
+    Atom80 (Tesserae_atoms.Mma_atom.sm80_16x8x16_f32f16f16f32
+              Tesserae_atoms.Mma_atom.ColMajor
+              Tesserae_atoms.Mma_atom.RowMajor)
+  | Sm90Wgmma ->
+    Atom90 (Tesserae_atoms.Mma_atom.sm90_64x128x16_f32f16f16f32
+              Tesserae_atoms.Mma_atom.ColMajor
+              Tesserae_atoms.Mma_atom.RowMajor)
+  | Sm100Tcgen05 ->
+    Atom100 (Tesserae_atoms.Mma_atom.sm100_128x128x16_f32f16f16f32
+               Tesserae_atoms.Mma_atom.ColMajor
+               Tesserae_atoms.Mma_atom.RowMajor)
+
 type mma_desc = {
   mma_kind : mma_kind;
+  mma_atom : packed_mma_atom;
   tensor_a : packed_tensor;
   tensor_b : packed_tensor;
   tensor_c : packed_tensor;

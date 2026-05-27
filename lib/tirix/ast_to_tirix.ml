@@ -244,8 +244,10 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
     ; mbar_var = None
     })
   | Kernel_ast.Mma (a_expr, b_expr, c_expr) ->
+    let kind = infer_mma_kind ctx in
     Tirix.SOp (Tirix.Mma {
-      mma_kind = infer_mma_kind ctx
+      mma_kind = kind
+    ; mma_atom = Tirix.default_atom_for_kind kind
     ; tensor_a = lookup_tensor ctx a_expr
     ; tensor_b = lookup_tensor ctx b_expr
     ; tensor_c = lookup_tensor ctx c_expr

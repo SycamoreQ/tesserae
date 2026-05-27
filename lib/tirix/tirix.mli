@@ -1,6 +1,7 @@
 open Tesserae_core
 open Tesserae_pipeline
 open Tesserae_kernel
+open Tesserae_atoms
 
 (** tirix — Tesserae Intermediate Representation.
     A typed, structured IR for tiled GPU programs.
@@ -144,15 +145,25 @@ type copy = {
 
 type mma_kind = Sm80Mma | Sm90Wgmma | Sm100Tcgen05
 
+type packed_mma_atom =
+  | Atom80  : (Mma_atom.sm80,  'a, 'b, 'c, 'd) Mma_atom.t -> packed_mma_atom
+  | Atom90  : (Mma_atom.sm90,  'a, 'b, 'c, 'd) Mma_atom.t -> packed_mma_atom
+  | Atom100 : (Mma_atom.sm100, 'a, 'b, 'c, 'd) Mma_atom.t -> packed_mma_atom
+
+val default_atom_for_kind : mma_kind -> packed_mma_atom
+
 type mma_desc = {
-  mma_kind    : mma_kind;
-  tensor_a    : packed_tensor;
-  tensor_b    : packed_tensor;
-  tensor_c    : packed_tensor;
+  mma_kind: mma_kind;
+  mma_atom : packed_mma_atom;
+  tensor_a : packed_tensor;
+  tensor_b : packed_tensor;
+  tensor_c : packed_tensor;
   smem_desc_a : Smem_desc.t option;
   smem_desc_b : Smem_desc.t option;
-  accum_flag  : bool;
+  accum_flag : bool;
 }
+
+
 
 (** {1 Primitive operations} *)
 

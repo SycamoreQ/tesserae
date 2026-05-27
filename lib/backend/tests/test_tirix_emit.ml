@@ -269,7 +269,7 @@ let test_kernel_func_shared_storage () =
 let test_kernel_func_cluster_attr_blackwell () =
   let out = lower_and_emit (blackwell_kernel ()) in
   Alcotest.(check bool) "cluster attr" true
-    (contains "__cluster_dims__" out.Backend_cute.kernel_func)
+    (contains "[[nv::cluster_dimensions" out.Backend_cute.kernel_func)
 
 let test_kernel_func_tmem_alloc_blackwell () =
   let out = lower_and_emit (blackwell_kernel ()) in

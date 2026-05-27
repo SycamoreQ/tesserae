@@ -4,6 +4,7 @@ open Tesserae_pipeline
 open Tesserae_core
 open Tirix
 open Tesserae_kernel
+open Tesserae_atoms
 
 let tirix_is_tma (k : tirix) =
   List.exists k.params ~f:(fun p -> p.param_is_tma)
@@ -17,7 +18,7 @@ let emit_scalar_ty : type a. a scalar_ty -> string = function
   | F32 ->  "float"
   | BF16 -> "__nv_bfloat16"
   | Bool -> "bool"
-  | Ptr ->  "uint64_t"
+  | Ptr ->  "void*"  (* FIXED: Use proper pointer type instead of uint64_t *)
 
 let emit_packed_scalar (Scalar s) = emit_scalar_ty s
 
@@ -34,7 +35,6 @@ let emit_bitwise_op = function
   | Bitwise.BitAnd -> "&" | Bitwise.BitOr -> "|" | Bitwise.BitXor -> "^"
   | Bitwise.Shl    -> "<<" | Bitwise.Shr -> ">>"
 
-
 let emit_unop = function
   | Unop.Neg -> "-" | Unop.Not -> "!" | Unop.BitNot -> "~"
 
@@ -47,12 +47,11 @@ let rec emit_expr : type a. a expr -> string = function
   | Const (F32, v) -> Printf.sprintf "%ff" v
   | Const (BF16, v) -> Printf.sprintf "__float2bfloat16(%ff)" v
   | Const (Bool, v) -> if v then "true" else "false"
-  | Const (Ptr, v) -> Printf.sprintf "0x%LxULL" v
+  | Const (Ptr, v) -> Printf.sprintf "(void*)0x%LxULL" v  (* FIXED: Cast to void* *)
   | Cast (ty, e) ->
     Printf.sprintf "((%s)(%s))" (emit_scalar_ty ty) (emit_expr e)
   | Var v -> v.var_name
   | Builtin b -> emit_builtin b
-
   | Arith (op, l, r) ->
     Printf.sprintf "(%s %s %s)" (emit_expr l) (emit_arith_op op) (emit_expr r)
   | Cmp (op, l, r) ->
@@ -64,7 +63,10 @@ let rec emit_expr : type a. a expr -> string = function
   | Unop (op, e) ->
     Printf.sprintf "(%s%s)" (emit_unop op) (emit_expr e)
   | AddrConv (kind, e) ->
-    Printf.sprintf "%s(%s)" (emit_addr_conv kind) (emit_expr e)
+    (* FIXED: Cast address conversions to appropriate types *)
+    let conv = emit_addr_conv kind in
+    let arg = emit_expr e in
+    Printf.sprintf "((uint32_t)%s(%s))" conv arg
 
 and emit_builtin = function
   | ThreadIdx X -> "threadIdx.x"
@@ -102,22 +104,25 @@ let emit_barrier = function
   | MbarInit { mbar; count } ->
     Printf.sprintf
       "asm volatile(\"mbarrier.init.shared.b64 [%%0], %d;\" \
-       :: \"r\"(&%s) : \"memory\");"
+       :: \"l\"(&smem.%s) : \"memory\");"
       count mbar.var_name
+
   | MbarArriveExpect { mbar; bytes } ->
     Printf.sprintf
       "asm volatile(\"mbarrier.arrive.expect_tx.shared.b64 [%%0], %%1;\" \
-       :: \"r\"(&%s), \"r\"(%s) : \"memory\");"
+       :: \"l\"(&smem.%s), \"r\"(%s) : \"memory\");"
       mbar.var_name (emit_expr bytes)
+
   | MbarWaitParity { mbar; phase } ->
     Printf.sprintf
-      "asm volatile(\"mbarrier.try_wait.parity.shared.b64 [%%0], %%1, %%2;\" \
-       :: \"r\"(&%s), \"r\"(%s), \"r\"(0x989680U) : \"memory\");"
+      "asm volatile(\"mbarrier.try_wait.parity.shared.b64 [%%0], %%1, 0x989680;\" \
+       :: \"l\"(&smem.%s), \"r\"(%s) : \"memory\");"
       mbar.var_name (emit_expr phase)
+
   | MbarArrive { mbar } ->
     Printf.sprintf
       "asm volatile(\"mbarrier.arrive.shared::cta.b64 [%%0];\" \
-       :: \"r\"(&%s) : \"memory\");"
+       :: \"l\"(&smem.%s) : \"memory\");"
       mbar.var_name
   | ClusterArrive ->
     "asm volatile(\"barrier.cluster.arrive.relaxed.aligned;\");"
@@ -143,24 +148,27 @@ let emit_copy (c : copy) : string =
   | CpAsync ->
     Printf.sprintf
       "%sasm volatile(\"cp.async.ca.shared.global [%%0], [%%1], 16;\" \
-       :: \"r\"(__cvta_generic_to_shared(%s)), \"l\"(%s) : \"memory\");"
+       :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s[0])), \
+          \"l\"((uint64_t)(uintptr_t)%s) : \"memory\");"
       pred dst.tensor_name src.tensor_name
+
   | TmaLoad ->
     let mbar_s = match c.mbar_var with
-      | None ->   "nullptr"
-      | Some v -> Printf.sprintf "&%s" v.var_name
+      | None -> "nullptr"
+      | Some v -> Printf.sprintf "smem.%s" v.var_name
     in
     Printf.sprintf
-      "%stma_2d_gmem2smem(%s, &%s_tmap, coord_k, coord_m, %s);"
+      "%stma_2d_gmem2smem(&smem.%s, %s_tmap, coord_k, coord_m, %s);"
       pred dst.tensor_name src.tensor_name mbar_s
+
   | TmaMulticast ->
     let mbar_s = match c.mbar_var with
-      | None ->   "nullptr"
-      | Some v -> Printf.sprintf "&%s" v.var_name
+      | None -> "0"
+      | Some v -> Printf.sprintf "&smem.%s" v.var_name
     in
     Printf.sprintf
-      "%stma_2d_gmem2smem_multicast(%s, &%s_tmap, coord_k, \
-       coord_n + cta_rank * (BN / 2), %s, 0b11);"
+      "%stma_2d_gmem2smem_multicast(&smem.%s, &%s_tmap, 0, \
+       0, %s, 0b11);"
       pred dst.tensor_name src.tensor_name mbar_s
   | RegToSmem ->
     Printf.sprintf "cute::copy(%s, %s);"
@@ -169,45 +177,82 @@ let emit_copy (c : copy) : string =
     Printf.sprintf "cute::copy(%s, %s);"
       src.tensor_name dst.tensor_name
 
+
 let emit_mma (m : mma_desc) : string =
   let (Tensor a) = m.tensor_a in
   let (Tensor b) = m.tensor_b in
   let (Tensor c) = m.tensor_c in
   let accum = if m.accum_flag then "1" else "0" in
   match m.mma_kind with
+
   | Sm80Mma ->
+    let atom_str = match m.mma_atom with
+      | Atom80 a -> Mma_atom.emit_cpp a
+      | _ -> failwith "emit_mma: Sm80Mma requires Atom80"
+    in
+    let (Tensor at) = m.tensor_a in
+    let (Tensor bt) = m.tensor_b in
+    let a_size = Layout.size at.tensor_layout in
+    let b_size = Layout.size bt.tensor_layout in
     Printf.sprintf
-      "cute::gemm(tiled_mma, %s, %s, %s);"
-      a.tensor_name b.tensor_name c.tensor_name
+      "{\n\
+      \  auto sA = make_tensor(make_smem_ptr(&smem.%s[0]),\n\
+      \    make_layout(make_shape(Int<%d>{})));\n\
+      \  auto sB = make_tensor(make_smem_ptr(&smem.%s[0]),\n\
+      \    make_layout(make_shape(Int<%d>{})));\n\
+      \  auto thr_mma = tiled_mma.get_slice(threadIdx.x);\n\
+      \  auto tAsA = thr_mma.partition_A(sA);\n\
+      \  auto tBsB = thr_mma.partition_B(sB);\n\
+      \  cute::gemm(tiled_mma, %s, tAsA, tBsB, %s); // %s\n\
+       }"
+      at.tensor_name a_size
+      bt.tensor_name b_size
+      c.tensor_name c.tensor_name
+      atom_str
+
   | Sm90Wgmma ->
-    let desc_a = match m.smem_desc_a with
-      | None ->   a.tensor_name
-      | Some d ->
-        Smem_desc.emit_make_smem_desc
-          a.tensor_name
-          d.Smem_desc.leading_off
-          d.Smem_desc.stride_off
-          d.Smem_desc.swizzle_mode
+    let (mn_str, _dt, at, bt) = match m.mma_atom with
+      | Atom90 atom ->
+        let (_, n, k) = Mma_atom.shape atom in
+        ( Printf.sprintf "m64n%dk%d" n k
+        , Mma_atom.elem_string atom.Mma_atom.d_type
+        , Mma_atom.elem_string atom.Mma_atom.a_type
+        , Mma_atom.elem_string atom.Mma_atom.b_type )
+      | _ -> failwith "emit_mma: Sm90Wgmma requires Atom90"
     in
-    let desc_b = match m.smem_desc_b with
-      | None ->   b.tensor_name
-      | Some d ->
-        Smem_desc.emit_make_smem_desc
-          b.tensor_name
-          d.Smem_desc.leading_off
-          d.Smem_desc.stride_off
-          d.Smem_desc.swizzle_mode
+    let desc_a_expr = Printf.sprintf
+      "make_smem_desc_raw((uint32_t)__cvta_generic_to_shared(&smem.%s[0]), 0, 0, 3)"
+      a.tensor_name
+    in
+    let desc_b_expr = Printf.sprintf
+      "make_smem_desc_raw((uint32_t)__cvta_generic_to_shared(&smem.%s[0]), 0, 0, 3)"
+      b.tensor_name
+    in
+    (* acc is a CuTe fragment -- reference each element by index *)
+    let n_acc = 4 in (* 64x128x16 wgmma produces 4 f32 accumulators per thread *)
+    let acc_outputs = String.concat ~sep:", "
+      (List.init n_acc ~f:(fun i -> Printf.sprintf "\"+f\"(acc(%d))" i))
     in
     Printf.sprintf
-      "wgmma::wgmma_async(%s, %s, %s, %s);"
-      c.tensor_name desc_a desc_b accum
+      "{\n\
+      \  uint64_t desc_a = %s;\n\
+      \  uint64_t desc_b = %s;\n\
+      \  asm volatile(\"wgmma.mma_async.sync.aligned.%s.f32.%s.%s \
+       {%%0,%%1,%%2,%%3}, %%4, %%5, %s;\"\n\
+      \    : %s\n\
+      \    : \"l\"(desc_a), \"l\"(desc_b));\n\
+       }"
+      desc_a_expr desc_b_expr
+      mn_str at bt accum
+      acc_outputs
+
   | Sm100Tcgen05 ->
     let desc_a = match m.smem_desc_a with
-      | None ->   a.tensor_name
+      | None -> a.tensor_name
       | Some _ -> Printf.sprintf "make_smem_desc(%s)" a.tensor_name
     in
     let desc_b = match m.smem_desc_b with
-      | None ->   b.tensor_name
+      | None -> b.tensor_name
       | Some _ -> Printf.sprintf "make_smem_desc(%s)" b.tensor_name
     in
     Printf.sprintf
@@ -215,6 +260,36 @@ let emit_mma (m : mma_desc) : string =
        [%%0], %%1, %%2, %%3;\" \
        :: \"r\"(tmem_addr), \"r\"(%s), \"r\"(%s), \"n\"(%s) : \"memory\");"
       desc_a desc_b accum
+
+
+let emit_tiled_mma_decl (k : tirix) : string =
+  let rec collect = function
+    | [] -> []
+    | SOp (Mma m) :: rest -> m.mma_atom :: collect rest
+    | SWarpGroup (_, body) :: rest -> collect body @ collect rest
+    | SIf (_, thn, els) :: rest -> collect thn @ collect els @ collect rest
+    | SFor { body; _ } :: rest -> collect body @ collect rest
+    | SPipeline { prologue; mainloop; epilogue; _ } :: rest ->
+      collect prologue @ collect mainloop @ collect epilogue @ collect rest
+    | SSeq ss :: rest -> collect ss @ collect rest
+    | _ :: rest -> collect rest
+  in
+  let atoms = collect k.body in
+  let first_sm80_str =
+    List.find_map atoms ~f:(function
+      | Atom80 a -> Some (Mma_atom.emit_cpp a)
+      | _ -> None)
+  in
+  match first_sm80_str with
+  | None -> ""
+  | Some atom_str ->
+    Printf.sprintf
+      "  auto tiled_mma = make_tiled_mma(MMA_Atom<%s>{});\n\
+      \  auto thr_mma = tiled_mma.get_slice(threadIdx.x);\n\
+      \  auto acc = partition_fragment_C(thr_mma,\n\
+      \    make_layout(make_shape(Int<%d>{}, Int<%d>{})));\n\
+      \  clear(acc);\n"
+      atom_str k.bm k.bn
 
 let emit_op = function
   | Copy c -> emit_copy c
@@ -224,14 +299,16 @@ let emit_op = function
     Printf.sprintf
       "asm volatile(\"tcgen05.alloc.cta_group::1.sync.aligned.\
        shared::cta.b32 [%%0], %d;\" \
-       :: \"r\"(&%s) : \"memory\");"
+       :: \"r\"(&smem.%s) : \"memory\");"
       col_count addr_var.var_name
+
   | TmemDealloc { addr_var; col_count } ->
     Printf.sprintf
       "asm volatile(\"tcgen05.dealloc.cta_group::1.sync.aligned.b32 \
        %%0, %d;\" \
-       :: \"r\"(%s) : \"memory\");"
+       :: \"r\"(smem.%s) : \"memory\");"
       col_count addr_var.var_name
+
   | TmemLoad { dst_vars; src_addr; col_offset } ->
     let regs = String.concat ~sep:", "
       (List.map dst_vars ~f:(fun v -> v.var_name))
@@ -240,30 +317,28 @@ let emit_op = function
       "asm volatile(\"tcgen05.ld.sync.aligned.32x32b.x%d.b32 \
        {%s}, [%%0 + %d];\" \
        :: \"r\"(%s) : \"memory\");"
-      (List.length dst_vars)
-      regs
-      col_offset
-      (emit_expr src_addr)
+      (List.length dst_vars) regs col_offset (emit_expr src_addr)
+
   | TmemCommit { mbar_var; cta_mask } ->
     let mask_s = match cta_mask with
-      | None ->   ""
+      | None -> ""
       | Some m -> Printf.sprintf ", %d" m
     in
     Printf.sprintf
       "asm volatile(\"tcgen05.commit.cta_group::1.\
        mbarrier::arrive::one.shared::cluster.b64 [%%0]%s;\" \
-       :: \"r\"(&%s) : \"memory\");"
+       :: \"r\"(&smem.%s) : \"memory\");"
       mask_s mbar_var.var_name
+
   | SmemDescInit { desc_var; ptr_expr; leading_dim; stride; swizzle } ->
-    let sw_bits = Smem_desc.swizzle_mode_bits
-      (Smem_desc.swizzle_mode_of swizzle)
-    in
+    let sw_bits = Smem_desc.swizzle_mode_bits (Smem_desc.swizzle_mode_of swizzle) in
     Printf.sprintf
       "uint64_t %s = make_smem_desc_raw(%s, %d, %d, %d);"
-      desc_var.var_name (emit_expr ptr_expr)
-      leading_dim stride sw_bits
+      desc_var.var_name (emit_expr ptr_expr) leading_dim stride sw_bits
+
 
 let indent (depth : int) : string = String.make (depth * 2) ' '
+
 
 let rec emit_stmt ?(depth = 0) (s : stmt) : string =
   let ind = indent depth in
@@ -333,9 +408,11 @@ and emit_stmts ?(depth = 0) (stmts : stmt list) : string =
       if String.is_empty r then None else Some r))
 
 let emit_shared_storage (k : tirix) : string =
+  let mbar_names = ["full_mbar"; "empty_mbar"] in
   let tensor_decls = List.filter_map k.tensors
     ~f:(fun (name, Tensor t) ->
-      match t.tensor_memspace with
+      if List.mem mbar_names name ~equal:String.equal then None
+      else match t.tensor_memspace with
       | Memspace.Shared ->
         let elem_t = Elemtype.cpp_name t.tensor_elem_type in
         let size   = Layout.size t.tensor_layout in
@@ -344,10 +421,8 @@ let emit_shared_storage (k : tirix) : string =
   in
   let mbar_decls =
     if tirix_is_tma k then
-      [ Printf.sprintf
-          "  __align__(8) uint64_t full_mbar[%d];" k.pipeline_depth
-      ; Printf.sprintf
-          "  __align__(8) uint64_t empty_mbar[%d];" k.pipeline_depth ]
+      [ Printf.sprintf "  __align__(8) uint64_t full_mbar[%d];" k.pipeline_depth
+      ; Printf.sprintf "  __align__(8) uint64_t empty_mbar[%d];" k.pipeline_depth ]
     else []
   in
   let tmem_decl =
@@ -360,16 +435,18 @@ let emit_shared_storage (k : tirix) : string =
     (String.concat ~sep:"\n" all)
 
 let emit_helper (h : helper_func) : string =
+  let builtin_helpers = ["tma_2d_gmem2smem"; "tma_2d_gmem2smem_multicast"; "make_smem_desc_raw"] in
+  if List.mem builtin_helpers h.hf_name ~equal:String.equal then ""
+  else
   let params = String.concat ~sep:", "
     (List.map h.hf_params ~f:(fun v ->
       Printf.sprintf "%s %s"
         (emit_packed_scalar v.var_type) v.var_name))
   in
   Printf.sprintf
-    "__device__ __forceinline__ %s %s(%s) {\n%s\n}"
+    "__device__ inline %s %s(%s) {\n%s\n}"
     (emit_packed_scalar h.hf_ret_type)
-    h.hf_name
-    params
+    h.hf_name params
     (emit_stmts ~depth:1 h.hf_body)
 
 let emit_params (k : tirix) : string =
@@ -382,11 +459,9 @@ let emit_params (k : tirix) : string =
         Printf.sprintf "int %s" p.param_name
       | _ ->
         if p.param_is_tma then
-          Printf.sprintf
-            "const __grid_constant__ CUtensorMap %s_tmap" p.param_name
+          Printf.sprintf "const CUtensorMap* %s_tmap" p.param_name
         else
           Printf.sprintf "const %s* %s" elem_t p.param_name))
-
 
 let rec collect_warp_groups (stmts : stmt list) : (Cluster.warp_role * stmt list) list =
   List.concat_map stmts ~f:(function
@@ -398,8 +473,6 @@ let rec collect_warp_groups (stmts : stmt list) : (Cluster.warp_role * stmt list
       collect_warp_groups prologue @ collect_warp_groups mainloop @ collect_warp_groups epilogue
     | _ -> [])
 
-
-
 let rec filter_non_warp (stmts : stmt list) : stmt list =
   List.filter_map stmts ~f:(function
     | SWarpGroup _ -> None
@@ -409,11 +482,14 @@ let rec filter_non_warp (stmts : stmt list) : stmt list =
     | s -> Some s)
 
 let emit_kernel_func (k : tirix) : string =
-  let n_threads    = Cluster.thread_count k.cluster in
+  let n_threads = Cluster.thread_count k.cluster in
   let cluster_attr =
     if Cluster.is_2sm k.cluster then
-      Printf.sprintf "__attribute__((%s))\n"
-        (Cluster.emit_cluster_attr k.cluster)
+    Printf.sprintf
+      "__cluster_dims__(%d, %d, %d) "
+      k.cluster.Cluster.dims.Cluster.x
+      k.cluster.Cluster.dims.Cluster.y
+      k.cluster.Cluster.dims.Cluster.z
     else ""
   in
   let warp_groups = collect_warp_groups k.body in
@@ -433,24 +509,19 @@ let emit_kernel_func (k : tirix) : string =
     Printf.sprintf "  if (%s) {\n%s\n  }"
       cond (emit_stmts ~depth:2 body))
   in
-  let warp_dispatch = String.concat ~sep:" else " warp_cases in
-  Printf.sprintf
-    "%s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
-    \  extern __shared__ char smem_buf[];\n\
-    \  SharedStorage& smem =\n\
-    \    *reinterpret_cast<SharedStorage*>(smem_buf);\n\
-    \  const int warp_id = threadIdx.x / 32;\n\
-    \  const int lane_id = threadIdx.x %% 32;\n\
-    \  (void)lane_id;\n\
-     %s\n\
-     %s\n\
-     }\n"
-    cluster_attr
-    n_threads
-    k.name
-    (emit_params k)
-    pre_s
-    warp_dispatch
+  let warp_dispatch =
+    if List.is_empty warp_cases then ""
+    else
+      String.concat ~sep:" else " warp_cases in
+        let tiled_mma_s = emit_tiled_mma_decl k in
+        Printf.sprintf
+          "%s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
+          \  extern __shared__ char smem_buf[];\n\
+          \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
+          \  (void)0; // warp_id/lane_id come from pre_s below\n\
+           %s\n%s\n%s\n}\n"
+          cluster_attr n_threads k.name (emit_params k)
+          pre_s tiled_mma_s warp_dispatch
 
 
 let emit_host_launcher_params (k : tirix) : string =
@@ -467,10 +538,15 @@ let emit_host_launcher_params (k : tirix) : string =
         else
           Printf.sprintf "const %s* %s" elem_t p.param_name))
 
-
 let emit_host_launcher (k : tirix) : string =
   let is_blackwell =
     match k.family with Kernel_desc.Blackwell -> true | _ -> false
+  in
+  (* FIXED: Don't include M, N, K twice *)
+  let kernel_args = String.concat ~sep:", "
+    (List.map k.params ~f:(fun p ->
+      if p.param_is_tma then Printf.sprintf "%s_tmap" p.param_name
+      else p.param_name))
   in
   let launch =
     if is_blackwell then
@@ -488,59 +564,80 @@ let emit_host_launcher (k : tirix) : string =
         k.cluster.Cluster.dims.Cluster.x
         k.cluster.Cluster.dims.Cluster.y
         k.cluster.Cluster.dims.Cluster.z
-        k.name
-        (String.concat ~sep:", "
-          (List.map k.params ~f:(fun p ->
-            if p.param_is_tma then Printf.sprintf "&%s_tmap" p.param_name
-            else p.param_name)))
+        k.name kernel_args
     else
       Printf.sprintf
-        "  cudaFuncSetAttribute(%s,\n\
-        \    cudaFuncAttributeMaxDynamicSharedMemorySize, %d);\n\
-        \  %s<<<grid, block, %d>>>(%s);"
-        k.name k.smem_bytes k.name k.smem_bytes
-        (String.concat ~sep:", "
-          (List.map k.params ~f:(fun p ->
-            if p.param_is_tma then Printf.sprintf "&%s_tmap" p.param_name
-            else p.param_name)))
+        "  %s<<<grid, block, %d>>>(%s);"
+        k.name k.smem_bytes kernel_args
   in
   Printf.sprintf
-    "void launch_%s(\n  %s,\n  int M, int N, int K\n) {\n\
+    "void launch_%s(\n  %s\n) {\n\
     \  dim3 grid((M + %d - 1) / %d, (N + %d - 1) / %d, 1);\n\
     \  dim3 block(%d, 1, 1);\n\
      %s\n\
      }\n"
-    k.name
-    (emit_host_launcher_params k)
+    k.name (emit_host_launcher_params k)
     k.bm k.bm k.bn k.bn
-    (Cluster.thread_count k.cluster)
-    launch
+    (Cluster.thread_count k.cluster) launch
 
 let emit_includes (k : tirix) : string =
   let arch_inc = match k.family with
-    | Kernel_desc.Ampere ->    ""
-    | Kernel_desc.Hopper ->    "#include <cuda_bf16.h>\n"
+    | Kernel_desc.Ampere -> "#include <cuda_fp16.h>\n"
+    | Kernel_desc.Hopper -> "#include <cuda_bf16.h>\n"
     | Kernel_desc.Blackwell -> "#include <cuda_bf16.h>\n#include <cuda_fp8.h>\n"
   in
-  String.concat ~sep:"\n" [
-    "#pragma once"
-  ; "#include <cute/tensor.hpp>"
-  ; "#include <cute/atom/mma_atom.hpp>"
-  ; "#include <cute/atom/copy_atom.hpp>"
-  ; "#include <cute/algorithm/gemm.hpp>"
-  ; "#include <cute/algorithm/copy.hpp>"
-  ; "using namespace cute;"
-  ; arch_inc
-  ]
+  let lines = [
+    "#pragma once";
+    "#include <cute/tensor.hpp>";
+    "#include <cute/atom/mma_atom.hpp>";
+    "#include <cute/atom/copy_atom.hpp>";
+    "#include <cute/algorithm/gemm.hpp>";
+    "#include <cute/algorithm/copy.hpp>";
+    "using namespace cute;";
+    arch_inc;
+    "struct CUtensorMap { alignas(64) uint64_t opaque[16]; };";
+    "// SMEM descriptor helper";
+    "__device__ inline uint64_t make_smem_desc_raw(";
+    "    void* smem_ptr, uint32_t lead, uint32_t stride, uint32_t sw) {";
+    "  uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem_ptr);";
+    "  return ((uint64_t)sw << 52) | ((uint64_t)stride << 36) |";
+    "         ((uint64_t)lead << 16) | (addr >> 4);";
+    "}";
+    "";
+    "// TMA helper";
+    "__device__ inline void tma_2d_gmem2smem(";
+    "    void* smem, const CUtensorMap* tmap, int x, int y, uint64_t* mbar) {";
+    "  asm volatile(";
+    "    \"cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes\"";
+    "    \" [%0], [%1, {%2, %3}], [%4];\"";
+    "    :: \"r\"((uint32_t)__cvta_generic_to_shared(smem)), \"l\"(tmap),";
+    "       \"r\"(x), \"r\"(y), \"r\"((uint32_t)__cvta_generic_to_shared(mbar))";
+    "    : \"memory\");";
+    "}";
+    "";
+    "// TMA multicast helper";
+    "__device__ inline void tma_2d_gmem2smem_multicast(";
+    "    void* smem, const CUtensorMap* tmap, int x, int y,";
+    "    uint64_t* mbar, uint16_t cta_mask) {";
+    "  asm volatile(";
+    "    \"cp.async.bulk.tensor.2d.shared::cluster.global\"";
+    "    \".mbarrier::complete_tx::bytes.multicast::cluster\"";
+    "    \" [%0], [%1, {%2, %3}], [%4], %5;\"";
+    "    :: \"r\"((uint32_t)__cvta_generic_to_shared(smem)), \"l\"(tmap),";
+    "       \"r\"(x), \"r\"(y), \"l\"(mbar), \"h\"(cta_mask)";
+    "    : \"memory\");";
+    "}";
+  ] in
+  String.concat ~sep:"\n" lines
 
 let emit (k : tirix) : Backend_cute.output =
   let includes = emit_includes k in
   let helpers = String.concat ~sep:"\n\n"
     (List.map k.helpers ~f:emit_helper) in
   let shared_storage = emit_shared_storage k in
-  let kernel_func    = emit_kernel_func k in
+  let kernel_func = emit_kernel_func k in
   let host_launcher  = emit_host_launcher k in
-  let full_source    = String.concat ~sep:"\n\n"
+  let full_source = String.concat ~sep:"\n\n"
     [ includes; helpers; shared_storage; kernel_func; host_launcher ]
   in
   { Backend_cute.filename = k.name ^ ".cuh"

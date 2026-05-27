@@ -293,7 +293,7 @@ let test_pp_op_mma_sm80 () =
   let b = make_tensor "smem_B" Elemtype.Float16 Memspace.Shared in
   let c = make_tensor "acc"    Elemtype.Float32 Memspace.Register in
   let s = Tirix_pp.pp_op (Mma {
-    mma_kind = Sm80Mma; tensor_a = a; tensor_b = b; tensor_c = c
+    mma_kind = Sm80Mma; mma_atom = default_atom_for_kind Sm80Mma ; tensor_a = a; tensor_b = b; tensor_c = c
   ; smem_desc_a = None; smem_desc_b = None; accum_flag = true
   }) in
   Alcotest.(check bool) "SM80" true (contains "SM80" s)
@@ -303,7 +303,7 @@ let test_pp_op_mma_wgmma () =
   let b = make_tensor "smem_B" Elemtype.Bfloat16 Memspace.Shared in
   let c = make_tensor "acc"    Elemtype.Float32  Memspace.Register in
   let s = Tirix_pp.pp_op (Mma {
-    mma_kind = Sm90Wgmma; tensor_a = a; tensor_b = b; tensor_c = c
+    mma_kind = Sm90Wgmma; mma_atom = default_atom_for_kind Sm90Wgmma ; tensor_a = a; tensor_b = b; tensor_c = c
   ; smem_desc_a = None; smem_desc_b = None; accum_flag = true
   }) in
   Alcotest.(check bool) "SM90" true (contains "SM90" s)
@@ -313,7 +313,7 @@ let test_pp_op_mma_tcgen05 () =
   let b = make_tensor "smem_B" Elemtype.Bfloat16 Memspace.Shared in
   let c = make_tensor "acc"    Elemtype.Float32  Memspace.Register in
   let s = Tirix_pp.pp_op (Mma {
-    mma_kind = Sm100Tcgen05; tensor_a = a; tensor_b = b; tensor_c = c
+    mma_kind = Sm100Tcgen05; mma_atom = default_atom_for_kind Sm100Tcgen05 ; tensor_a = a; tensor_b = b; tensor_c = c
   ; smem_desc_a = None; smem_desc_b = None; accum_flag = true
   }) in
   Alcotest.(check bool) "SM100" true (contains "SM100" s)

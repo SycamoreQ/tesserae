@@ -23,10 +23,11 @@ let test_device_info () =
   Alcotest.(check bool) "non-empty" true (String.length s > 0);
   Printf.printf "GPU: %s\n%!" s
 
+
 let test_run_ok () =
   let k = Kernel_ast.make
     ~name:"gemm_test"
-    ~arch:Kernel_ast.SM80
+    ~arch:Kernel_ast.SM90
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
@@ -39,7 +40,10 @@ let test_run_ok () =
       ~a:(Array.make (128 * 32) 1.0)
       ~b:(Array.make (32 * 128) 1.0)
     in
-    Alcotest.(check bool) "ok" true (Result.is_ok result)
+    match result with
+    | Ok _ -> Alcotest.(check bool) "ok" true true
+    | Error msg -> Alcotest.failf "Runtime.run failed with: %s" msg
+
 
 let test_run_output_size () =
   let k = Kernel_ast.make

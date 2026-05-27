@@ -108,6 +108,18 @@ val sm100_64x64x32_s32s8s8s32 : major -> major ->
 (** [shape a] returns (M, N, K) of the atom. *)
 val shape : (_, _, _, _, _) t -> int * int * int
 
+(** [elem_string t] returns the short uppercase type string used in atom names.
+    e.g. Float32 → "F32", Float16 → "F16", Bfloat16 → "BF16", Int8 → "S8", Int32 → "S32" *)
+val elem_string : _ Elemtype.t -> string
+
+(** [major_char m] returns the CUTLASS layout character for a matrix major order.
+    ColMajor → "T", RowMajor → "N" *)
+val major_char : major -> string
+
+(** [arch_string a] returns the architecture prefix string.
+    SM80 → "SM80", SM90 → "SM90", SM100 → "SM100" *)
+val arch_string : (_, _, _, _, _) t -> string
+
 (** [thread_count a] returns the number of threads that participate
     in this atom.
     SM80:  32  (one warp)
