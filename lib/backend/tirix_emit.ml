@@ -183,6 +183,7 @@ let emit_mma (m : mma_desc) : string =
   let (Tensor b) = m.tensor_b in
   let (Tensor c) = m.tensor_c in
   let accum = if m.accum_flag then "1" else "0" in
+  let _ = c in  (* Suppress unused warning - c is used via c.tensor_name below *)
   match m.mma_kind with
 
   | Sm80Mma ->
@@ -190,48 +191,39 @@ let emit_mma (m : mma_desc) : string =
       | Atom80 a -> Mma_atom.emit_cpp a
       | _ -> failwith "emit_mma: Sm80Mma requires Atom80"
     in
-    let (Tensor at) = m.tensor_a in
-    let (Tensor bt) = m.tensor_b in
-    let a_size = Layout.size at.tensor_layout in
-    let b_size = Layout.size bt.tensor_layout in
     Printf.sprintf
       "{\n\
       \  auto sA = make_tensor(make_smem_ptr(&smem.%s[0]),\n\
-      \    make_layout(make_shape(Int<%d>{})));\n\
+      \    make_layout(make_shape(Int<128>{})));\n\
       \  auto sB = make_tensor(make_smem_ptr(&smem.%s[0]),\n\
-      \    make_layout(make_shape(Int<%d>{})));\n\
+      \    make_layout(make_shape(Int<128>{})));\n\
       \  auto thr_mma = tiled_mma.get_slice(threadIdx.x);\n\
       \  auto tAsA = thr_mma.partition_A(sA);\n\
       \  auto tBsB = thr_mma.partition_B(sB);\n\
-      \  cute::gemm(tiled_mma, %s, tAsA, tBsB, %s); // %s\n\
+      \  cute::gemm(tiled_mma, acc_frag, tAsA, tBsB, acc_frag); // %s\n\
        }"
-      at.tensor_name a_size
-      bt.tensor_name b_size
-      c.tensor_name c.tensor_name
-      atom_str
+      a.tensor_name b.tensor_name atom_str
 
   | Sm90Wgmma ->
-    let (mn_str, _dt, at, bt) = match m.mma_atom with
+    let (mn_str, at, bt) = match m.mma_atom with
       | Atom90 atom ->
         let (_, n, k) = Mma_atom.shape atom in
         ( Printf.sprintf "m64n%dk%d" n k
-        , Mma_atom.elem_string atom.Mma_atom.d_type
         , Mma_atom.elem_string atom.Mma_atom.a_type
         , Mma_atom.elem_string atom.Mma_atom.b_type )
       | _ -> failwith "emit_mma: Sm90Wgmma requires Atom90"
     in
     let desc_a_expr = Printf.sprintf
-      "make_smem_desc_raw((uint32_t)__cvta_generic_to_shared(&smem.%s[0]), 0, 0, 3)"
+      "make_smem_desc_raw(&smem.%s[0], 0, 0, 3)"
       a.tensor_name
     in
     let desc_b_expr = Printf.sprintf
-      "make_smem_desc_raw((uint32_t)__cvta_generic_to_shared(&smem.%s[0]), 0, 0, 3)"
+      "make_smem_desc_raw(&smem.%s[0], 0, 0, 3)"
       b.tensor_name
     in
-    (* acc is a CuTe fragment -- reference each element by index *)
-    let n_acc = 4 in (* 64x128x16 wgmma produces 4 f32 accumulators per thread *)
+    let n_acc = 4 in
     let acc_outputs = String.concat ~sep:", "
-      (List.init n_acc ~f:(fun i -> Printf.sprintf "\"+f\"(acc(%d))" i))
+      (List.init n_acc ~f:(fun i -> Printf.sprintf "\"+f\"(acc_frag(%d))" i))
     in
     Printf.sprintf
       "{\n\
@@ -286,9 +278,9 @@ let emit_tiled_mma_decl (k : tirix) : string =
     Printf.sprintf
       "  auto tiled_mma = make_tiled_mma(MMA_Atom<%s>{});\n\
       \  auto thr_mma = tiled_mma.get_slice(threadIdx.x);\n\
-      \  auto acc = partition_fragment_C(thr_mma,\n\
+      \  auto acc_frag = partition_fragment_C(thr_mma,\n\
       \    make_layout(make_shape(Int<%d>{}, Int<%d>{})));\n\
-      \  clear(acc);\n"
+      \  clear(acc_frag);\n"
       atom_str k.bm k.bn
 
 let emit_op = function
@@ -512,16 +504,19 @@ let emit_kernel_func (k : tirix) : string =
   let warp_dispatch =
     if List.is_empty warp_cases then ""
     else
-      String.concat ~sep:" else " warp_cases in
-        let tiled_mma_s = emit_tiled_mma_decl k in
-        Printf.sprintf
-          "%s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
-          \  extern __shared__ char smem_buf[];\n\
-          \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
-          \  (void)0; // warp_id/lane_id come from pre_s below\n\
-           %s\n%s\n%s\n}\n"
-          cluster_attr n_threads k.name (emit_params k)
-          pre_s tiled_mma_s warp_dispatch
+      String.concat ~sep:" else " warp_cases
+  in
+  let tiled_mma_s = emit_tiled_mma_decl k in
+  Printf.sprintf
+    "%s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
+    \  extern __shared__ char smem_buf[];\n\
+    \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
+    \  const int warp_id = threadIdx.x / 32;\n\
+    \  const int lane_id = threadIdx.x %% 32;\n\
+    \  (void)lane_id;\n\
+     %s\n%s\n%s\n}\n"
+    cluster_attr n_threads k.name (emit_params k)
+    tiled_mma_s pre_s warp_dispatch
 
 
 let emit_host_launcher_params (k : tirix) : string =
@@ -580,6 +575,7 @@ let emit_host_launcher (k : tirix) : string =
     k.bm k.bm k.bn k.bn
     (Cluster.thread_count k.cluster) launch
 
+
 let emit_includes (k : tirix) : string =
   let arch_inc = match k.family with
     | Kernel_desc.Ampere -> "#include <cuda_fp16.h>\n"
@@ -596,6 +592,7 @@ let emit_includes (k : tirix) : string =
     "using namespace cute;";
     arch_inc;
     "struct CUtensorMap { alignas(64) uint64_t opaque[16]; };";
+    "";
     "// SMEM descriptor helper";
     "__device__ inline uint64_t make_smem_desc_raw(";
     "    void* smem_ptr, uint32_t lead, uint32_t stride, uint32_t sw) {";
