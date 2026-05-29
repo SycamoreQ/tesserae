@@ -25,6 +25,8 @@ let cosize (l : t) : int =
 
   total_offset + 1
 
+let modes (l : t) : int list = Modes.flatten l.shape
+
 let idx (l : t) (i : Modes.t) : int =
   let strides = Modes.flatten l.stride in
   let elem_index = Modes.flatten i in

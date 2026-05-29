@@ -32,8 +32,8 @@ external get_log : program -> string
 
 let arch_string = function
   | Kernel_ast.SM80  -> "sm_80"
-  | Kernel_ast.SM90  -> "sm_90"
-  | Kernel_ast.SM100 -> "sm_100"
+  | Kernel_ast.SM90  -> "sm_90a"
+  | Kernel_ast.SM100 -> "sm_100a"
 
 let compile_source source ~name ~arch ?(options=[]) () =
   let prog = create_program source name in

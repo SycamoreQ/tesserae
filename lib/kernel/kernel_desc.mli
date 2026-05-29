@@ -69,7 +69,7 @@ val make_hopper :
   elem:'elem Elemtype.t ->
   m:int -> n:int -> k:int ->
   (Mma_atom.sm90,
-    Elemtype.bfloat16, Elemtype.bfloat16,
+    Elemtype.float16, Elemtype.float16,
     Elemtype.float32, Elemtype.float32,
     'elem) t
 

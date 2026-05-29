@@ -21,6 +21,9 @@ val rank : t -> int
     Think of it as the minimum allocation needed to hold this layout. *)
 val cosize : t -> int
 
+(** [modes l] returns the flat list of mode sizes from the layout's shape. *)
+val modes : t -> int list
+
 (** [idx l i] computes the flat memory offset for logical index [i].
     [i] must be a [Modes.t] with the same structure as [l.shape].
     Raises [Invalid_argument] if structures differ.

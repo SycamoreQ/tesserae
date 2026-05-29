@@ -54,7 +54,7 @@ val construct_consumer_body :
   stmt
 
 val construct_epilogue_body :
-  (_, _, _, _, _, _) Kernel_desc.t -> var list -> stmt
+  (_, _, _, _, _, _) Kernel_desc.t -> var list -> (string * packed_tensor) list -> stmt
 
 val construct_mbar_init :
   (_, _, _, _, _, _) Kernel_desc.t -> var list -> stmt list

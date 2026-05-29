@@ -85,12 +85,12 @@ let test_arch_sm80 () =
     "sm_80" (Nvrtc.arch_string Kernel_ast.SM80)
 
 let test_arch_sm90 () =
-  Alcotest.(check string) "sm90"
-    "sm_90" (Nvrtc.arch_string Kernel_ast.SM90)
+  Alcotest.(check string) "sm90a"
+    "sm_90a" (Nvrtc.arch_string Kernel_ast.SM90)
 
 let test_arch_sm100 () =
-  Alcotest.(check string) "sm100"
-    "sm_100" (Nvrtc.arch_string Kernel_ast.SM100)
+  Alcotest.(check string) "sm100a"
+    "sm_100a" (Nvrtc.arch_string Kernel_ast.SM100)
 
 let test_compile_kernel_ampere () =
   let src = ampere_source () in
@@ -120,8 +120,8 @@ let () =
                 ; Alcotest.test_case "entry"     `Quick test_compile_ptx_contains_kernel
                 ; Alcotest.test_case "invalid"   `Quick test_compile_invalid_source ];
     "arch",     [ Alcotest.test_case "sm80"      `Quick test_arch_sm80
-                ; Alcotest.test_case "sm90"      `Quick test_arch_sm90
-                ; Alcotest.test_case "sm100"     `Quick test_arch_sm100 ];
+                ; Alcotest.test_case "sm90a"      `Quick test_arch_sm90
+                ; Alcotest.test_case "sm100a"     `Quick test_arch_sm100 ];
     "kernel",   [ Alcotest.test_case "ampere"    `Quick test_compile_kernel_ampere ];
     "options",  [ Alcotest.test_case "fast-math" `Quick test_compile_with_options];
   ]

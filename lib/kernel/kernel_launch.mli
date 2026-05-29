@@ -1,6 +1,10 @@
 type module_
 type func
 
+val create_tma_descriptor :
+  nativeint -> int -> int -> int -> int -> nativeint
+
+val free_tma_descriptor : nativeint -> unit
 
 val load_ptx      : string -> module_
 val unload        : module_ -> unit

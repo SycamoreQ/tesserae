@@ -245,6 +245,7 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
   | false, true -> [ make_smem_desc_fn; tma_load_fn ]
   | _,     false -> []
 
+
 let construct_producer_body
     (desc : (_, _, _, _, _, _) Kernel_desc.t)
     (vars : var list)
@@ -258,10 +259,16 @@ let construct_producer_body
   let _, smem_b = List.find_exn smem ~f:(fun (n,_) -> String.equal n "smem_B") in
   let a_tensor = make_global_tensor "A" (elem_type_of desc) in
   let b_tensor = make_global_tensor "B" (elem_type_of desc) in
-  let let_stage =
-    SAssign (stage_var,
-      Expr (Arith (Mod, Var k_var, i32 depth)))
+  let atom_k = match packed_atom_of_desc desc with
+    | Atom90 a -> let (_, _, k) = Mma_atom.shape a in k
+    | Atom80 a -> let (_, _, k) = Mma_atom.shape a in k
+    | Atom100 a -> let (_, _, k) = Mma_atom.shape a in k
   in
+  let let_stage = SAssign (stage_var,
+    Expr (Arith (Mod,
+      Arith (Div, Var k_var, i32 atom_k),
+      i32 depth))) in
+
   let copy_ops = match is_tma desc, is_blackwell desc with
     | true, true ->
       let mbar = find "full_mbar" in
@@ -323,64 +330,77 @@ let construct_producer_body
       var = k_var;
       start = i32 0;
       stop = i32 bk;
-      step = i32 1;
+      step = i32 atom_k;
       dir = Upto;
       unroll = false;
       body = loop_body;
     }
   ])
 
+
 let construct_consumer_body
     (desc : (_, _, _, _, _, _) Kernel_desc.t)
     (vars : var list)
     (smem : (string * packed_tensor) list) =
   let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
-  let k_var = mk_var "k" S32 ~mut:true () in
+  let k_var   = mk_var "k"     S32 ~mut:true () in
   let stage_var = mk_var "stage" S32 ~mut:true () in
   let phase_var = mk_var "phase" S32 ~mut:true () in
-  let bk = desc.Kernel_desc.bk in
-  let depth = desc.Kernel_desc.pipeline.Pipeline.depth in
   let _, smem_a = List.find_exn smem ~f:(fun (n,_) -> String.equal n "smem_A") in
   let _, smem_b = List.find_exn smem ~f:(fun (n,_) -> String.equal n "smem_B") in
   let acc = make_global_tensor "acc" Elemtype.Float32 in
   let mma_kind = match desc.Kernel_desc.family with
-    | Kernel_desc.Ampere -> Sm80Mma
-    | Kernel_desc.Hopper -> Sm90Wgmma
+    | Kernel_desc.Ampere   -> Sm80Mma
+    | Kernel_desc.Hopper   -> Sm90Wgmma
     | Kernel_desc.Blackwell -> Sm100Tcgen05
   in
-  let let_stage =
-    SAssign (stage_var, Expr (Arith (Mod, Var k_var, i32 depth)))
+  (* Step by atom_k, not 1 — avoids full unroll of 32 iterations *)
+  let atom_k = match packed_atom_of_desc desc with
+    | Atom90  a -> let (_, _, k) = Mma_atom.shape a in k
+    | Atom80  a -> let (_, _, k) = Mma_atom.shape a in k
+    | Atom100 a -> let (_, _, k) = Mma_atom.shape a in k
   in
-  let let_phase =
-    SAssign (phase_var,
-      Expr (Arith (Mod,
-        Arith (Div, Var k_var, i32 depth),
-        i32 2)))
-  in
-  let wait_op = if is_tma desc then
-    let mbar = find "full_mbar" in
-    SOp (Barrier (MbarWaitParity { mbar; phase = Var phase_var }))
-  else
-    SOp (Barrier CpAsyncWaitAll)
+  let bk    = desc.Kernel_desc.bk in
+  let depth = desc.Kernel_desc.pipeline.Pipeline.depth in
+  let let_stage = SAssign (stage_var,
+    Expr (Arith (Mod,
+      Arith (Div, Var k_var, i32 atom_k),
+      i32 depth))) in
+
+  let let_phase = SAssign (phase_var,
+    Expr (Arith (Mod,
+      Arith (Div, Var k_var, i32 (atom_k * depth)),
+      i32 2))) in
+
+  let wait_op =
+    if is_tma desc then
+      let mbar = find "full_mbar" in
+      SOp (Barrier (MbarWaitParity { mbar; phase = Var phase_var }))
+    else
+      SOp (Barrier CpAsyncWaitAll)
   in
   let mma_op = SOp (Mma {
     mma_kind;
-    mma_atom = packed_atom_of_desc desc;
-    tensor_a = smem_a;
-    tensor_b = smem_b;
-    tensor_c = acc;
+    mma_atom    = packed_atom_of_desc desc;
+    tensor_a    = smem_a;
+    tensor_b    = smem_b;
+    tensor_c    = acc;
     smem_desc_a = None;
     smem_desc_b = None;
     accum_flag  = true;
   }) in
-  let arrive_op = if is_tma desc then
-    let mbar = find "empty_mbar" in
-    [ SOp (Barrier (MbarArrive { mbar })) ]
-  else [] in
-  let commit_op = if is_blackwell desc then
-    let mbar = find "full_mbar" in
-    [ SOp (TmemCommit { mbar_var = mbar; cta_mask = Some 0b11 }) ]
-  else [] in
+  let arrive_op =
+    if is_tma desc then
+      let mbar = find "empty_mbar" in
+      [ SOp (Barrier (MbarArrive { mbar })) ]
+    else []
+  in
+  let commit_op =
+    if is_blackwell desc then
+      let mbar = find "full_mbar" in
+      [ SOp (TmemCommit { mbar_var = mbar; cta_mask = Some 0b11 }) ]
+    else []
+  in
   let loop_body =
     [ let_stage; let_phase; wait_op; mma_op ]
     @ arrive_op
@@ -390,20 +410,25 @@ let construct_consumer_body
     SLetMut (stage_var, Expr (Const (S32, 0l)));
     SLetMut (phase_var, Expr (Const (S32, 0l)));
     SFor {
-      var = k_var;
+      var   = k_var;
       start = i32 0;
-      stop = i32 bk;
-      step = i32 1;
-      dir = Upto;
+      stop  = i32 bk;
+      step  = i32 atom_k;   (* KEY: step by 16, not 1 *)
+      dir   = Upto;
       unroll = false;
-      body = loop_body;
+      body  = loop_body;
     }
   ])
 
+
 let construct_epilogue_body
     (desc : (_, _, _, _, _, _) Kernel_desc.t)
-    (vars : var list) =
+    (vars : var list)
+    (smem : (string * packed_tensor) list) =
   let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
+  (* Get the shared memory tensors *)
+  let _, smem_a = List.find_exn smem ~f:(fun (n,_) -> String.equal n "smem_A") in
+  let _, smem_b = List.find_exn smem ~f:(fun (n,_) -> String.equal n "smem_B") in
   match desc.Kernel_desc.family with
   | Kernel_desc.Blackwell ->
     let tmem_addr = find "tmem_addr" in
@@ -417,54 +442,32 @@ let construct_epilogue_body
         col_offset = 0;
       });
     ])
-  | _ ->
-    let acc = make_global_tensor "acc" Elemtype.Float32 in
+  | Kernel_desc.Hopper ->
+    (* For Hopper/SM90, WGMMA accumulates directly to acc_raw in the consumer.
+       The epilogue just needs to handle storing results, not compute MMA.
+       For now, we skip the epilogue MMA entirely. *)
+    SWarpGroup (Cluster.Epilogue, [
+      (* TODO: Add store to global memory here when ready *)
+      (* For now, just a placeholder - the accumulator is already in acc_frag *)
+    ])
+  | Kernel_desc.Ampere ->
+    (* For Ampere/SM80, the epilogue does the final MMA accumulation *)
     let c = make_global_tensor "C" Elemtype.Float32 in
     SWarpGroup (Cluster.Epilogue, [
-    SOp (Mma {
-      mma_kind = Sm80Mma;
-      mma_atom = Tirix.default_atom_for_kind Sm80Mma;
-      tensor_a = acc;
-      tensor_b = acc;
-      tensor_c = c;
-      smem_desc_a = None;
-      smem_desc_b = None;
-      accum_flag = false;
-    });
-  ])
+      SOp (Mma {
+        mma_kind = Sm80Mma;
+        mma_atom = Tirix.default_atom_for_kind Sm80Mma;
+        tensor_a = smem_a;
+        tensor_b = smem_b;
+        tensor_c = c;
+        smem_desc_a = None;
+        smem_desc_b = None;
+        accum_flag = false;
+      });
+    ])
 
-let construct_mbar_init
-    (desc : (_, _, _, _, _, _) Kernel_desc.t)
-    (vars : var list) =
-  if not (is_tma desc) then []
-  else
-    let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
-    let warp_id = find "warp_id" in
-    let lane_id = find "lane_id" in
-    let full_m  = find "full_mbar" in
-    let empty_m = find "empty_mbar" in
-    let depth = desc.Kernel_desc.pipeline.Pipeline.depth in
-    let i_var = mk_var "i" S32 ~mut:true () in
-    let init_loop = SFor {
-      var = i_var;
-      start = i32 0;
-      stop = i32 depth;
-      step = i32 1;
-      dir = Upto;
-      unroll = false;
-      body = [
-        SOp (Barrier (MbarInit { mbar = full_m;  count = 1 }));
-        SOp (Barrier (MbarInit { mbar = empty_m; count = 1 }));
-      ];
-    } in
-    [ SIf (
-        Logic (And,
-          Cmp (Eq, Var warp_id, i32 0),
-          Cmp (Eq, Var lane_id, i32 0)),
-        [ init_loop ],
-        []
-      )
-    ; SOp (Barrier CtaSync) ]
+let construct_mbar_init (desc : (_, _, _, _, _, _) Kernel_desc.t) (_vars : var list) =
+  if not (is_tma desc) then [] else []
 
 let tmem_alloc_op
     (desc : (_, _, _, _, _, _) Kernel_desc.t)
@@ -494,7 +497,7 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
   let mbar_init = construct_mbar_init desc vars in
   let producer = construct_producer_body desc vars tensors in
   let consumer = construct_consumer_body desc vars tensors in
-  let epilogue = construct_epilogue_body desc vars in
+  let epilogue = construct_epilogue_body desc vars tensors in
   let find v = List.find_exn vars ~f:(fun x -> String.equal x.var_name v) in
   let warp_id = find "warp_id" in
 

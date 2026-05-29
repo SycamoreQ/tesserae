@@ -69,33 +69,88 @@ CAMLprim value caml_launch_kernel_bytecode(value* argv, int argc) {
     argv[4], argv[5], argv[6], argv[7], argv[8]);
 }
 
+CAMLprim value caml_create_tma_descriptor(
+    value ptr_val,
+    value rows_val,
+    value cols_val,
+    value tile_rows_val,
+    value tile_cols_val)
+{
+  CAMLparam5(ptr_val, rows_val, cols_val, tile_rows_val, tile_cols_val);
+
+  CUtensorMap* tmap = (CUtensorMap*) aligned_alloc(64, sizeof(CUtensorMap));
+  if (!tmap) caml_failwith("aligned_alloc failed for CUtensorMap");
+
+  void* global_ptr = (void*)(intnat) Nativeint_val(ptr_val);
+  uint64_t global_dim[2]    = { (uint64_t)Int_val(cols_val),
+                                 (uint64_t)Int_val(rows_val) };
+  uint64_t global_stride[1] = { (uint64_t)Int_val(cols_val) * sizeof(uint16_t) };
+  uint32_t box_dim[2]       = { (uint32_t)Int_val(tile_cols_val),
+                                 (uint32_t)Int_val(tile_rows_val) };
+  uint32_t elem_stride[2]   = { 1, 1 };
+
+  CUresult rc = cuTensorMapEncodeTiled(
+    tmap,
+    CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
+    2,
+    global_ptr,
+    global_dim,
+    global_stride,
+    box_dim,
+    elem_stride,
+    CU_TENSOR_MAP_INTERLEAVE_NONE,
+    CU_TENSOR_MAP_SWIZZLE_64B,
+    CU_TENSOR_MAP_L2_PROMOTION_NONE,
+    CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+  );
+
+  if (rc != CUDA_SUCCESS) {
+    free(tmap);
+    const char* msg;
+    cuGetErrorString(rc, &msg);
+    caml_failwith(msg ? msg : "cuTensorMapEncodeTiled failed");
+  }
+
+  CAMLreturn(caml_copy_nativeint((intnat) tmap));
+}
+
+CAMLprim value caml_free_tma_descriptor(value ptr_val) {
+  CAMLparam1(ptr_val);
+  void* p = (void*)(intnat) Nativeint_val(ptr_val);
+  free(p);
+  CAMLreturn(Val_unit);
+}
+
 
 CAMLprim value caml_launch_kernel(
-    value fn_val,
-    value gx, value gy, value gz,
-    value bx, value by, value bz,
-    value smem_val,
+    value fn_val, value gx, value gy, value gz,
+    value bx, value by, value bz, value smem_val,
     value args_bigarray) {
   CAMLparam5(fn_val, gx, gy, smem_val, args_bigarray);
   CAMLxparam4(gz, bx, by, bz);
 
   CUfunction fn = (CUfunction) Nativeint_val(fn_val);
+  int smem = Int_val(smem_val);
+
+  /* Opt into extended shared memory — required when smem > 48KB */
+  CUresult attr_rc = cuFuncSetAttribute(fn,
+    CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem);
+  if (attr_rc != CUDA_SUCCESS) {
+    const char* msg;
+    cuGetErrorString(attr_rc, &msg);
+    caml_failwith(msg ? msg : "cuFuncSetAttribute failed");
+  }
 
   struct caml_ba_array* ba = Caml_ba_array_val(args_bigarray);
-  intnat n   = ba->dim[0];
+  intnat n = ba->dim[0];
   intnat* data = (intnat*) ba->data;
-
-  /* params[i] must point to the i-th argument value directly */
   void** params = (void**) malloc(n * sizeof(void*));
-  for (intnat i = 0; i < n; i++) {
-    params[i] = &data[i];
-  }
+  for (intnat i = 0; i < n; i++) params[i] = &data[i];
 
   CUresult rc = cuLaunchKernel(fn,
     Int_val(gx), Int_val(gy), Int_val(gz),
     Int_val(bx), Int_val(by), Int_val(bz),
-    Int_val(smem_val), NULL,
-    params, NULL);
+    smem, NULL, params, NULL);
 
   free(params);
   CU_CHECK(rc);

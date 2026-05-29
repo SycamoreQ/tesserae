@@ -89,7 +89,6 @@ let to_ptx (k : Kernel_ast.kernel) : (result, compile_error) Result.t =
       "-D__LP64__";
       "-D__x86_64__";
       "-default-device";
-      "-arch=compute_90a";
       "--include-path=/usr/include";
       "--include-path=/usr/include/x86_64-linux-gnu";
       "--include-path=/usr/local/cuda/include";

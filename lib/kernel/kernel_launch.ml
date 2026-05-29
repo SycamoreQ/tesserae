@@ -19,6 +19,13 @@ external caml_module_unload : nativeint -> unit
 external caml_get_function : nativeint -> string -> nativeint
   = "caml_get_function"
 
+external create_tma_descriptor :
+  nativeint -> int -> int -> int -> int -> nativeint
+  = "caml_create_tma_descriptor"
+
+external free_tma_descriptor : nativeint -> unit
+  = "caml_free_tma_descriptor"
+
 external caml_launch_kernel : nativeint
   -> int -> int -> int
   -> int -> int -> int
