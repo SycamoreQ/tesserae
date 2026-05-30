@@ -78,8 +78,8 @@ CAMLprim value caml_create_tma_descriptor(
 {
   CAMLparam5(ptr_val, rows_val, cols_val, tile_rows_val, tile_cols_val);
 
-  CUtensorMap* tmap = (CUtensorMap*) aligned_alloc(64, sizeof(CUtensorMap));
-  if (!tmap) caml_failwith("aligned_alloc failed for CUtensorMap");
+  // 1. Allocate host descriptor on the stack
+  CUtensorMap host_tmap;
 
   void* global_ptr = (void*)(intnat) Nativeint_val(ptr_val);
   uint64_t global_dim[2]    = { (uint64_t)Int_val(cols_val),
@@ -90,7 +90,7 @@ CAMLprim value caml_create_tma_descriptor(
   uint32_t elem_stride[2]   = { 1, 1 };
 
   CUresult rc = cuTensorMapEncodeTiled(
-    tmap,
+    &host_tmap,
     CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
     2,
     global_ptr,
@@ -99,25 +99,35 @@ CAMLprim value caml_create_tma_descriptor(
     box_dim,
     elem_stride,
     CU_TENSOR_MAP_INTERLEAVE_NONE,
-    CU_TENSOR_MAP_SWIZZLE_64B,
+    CU_TENSOR_MAP_SWIZZLE_128B,
     CU_TENSOR_MAP_L2_PROMOTION_NONE,
     CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
   );
 
   if (rc != CUDA_SUCCESS) {
-    free(tmap);
     const char* msg;
     cuGetErrorString(rc, &msg);
     caml_failwith(msg ? msg : "cuTensorMapEncodeTiled failed");
   }
 
-  CAMLreturn(caml_copy_nativeint((intnat) tmap));
+  // 2. Allocate memory on the DEVICE
+  // cudaMalloc guarantees at least 256-byte alignment, satisfying the 128-byte TMA rule.
+  void* dev_tmap = NULL;
+  CUDA_CHECK(cudaMalloc(&dev_tmap, sizeof(CUtensorMap)));
+
+  // 3. Copy the encoded descriptor from host to device
+  CUDA_CHECK(cudaMemcpy(dev_tmap, &host_tmap, sizeof(CUtensorMap), cudaMemcpyHostToDevice));
+
+  // 4. Return the DEVICE pointer to OCaml
+  CAMLreturn(caml_copy_nativeint((intnat) dev_tmap));
 }
 
 CAMLprim value caml_free_tma_descriptor(value ptr_val) {
   CAMLparam1(ptr_val);
   void* p = (void*)(intnat) Nativeint_val(ptr_val);
-  free(p);
+  if (p) {
+    cudaFree(p);
+  }
   CAMLreturn(Val_unit);
 }
 

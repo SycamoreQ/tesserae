@@ -8,7 +8,7 @@ let test_make_valid () =
   let p = p4 () in
   Alcotest.(check int) "depth" 4 p.Pipeline.depth;
   Alcotest.(check int) "tile"  32768 p.Pipeline.tile_bytes;
-  Alcotest.(check int) "smem"  131072 p.Pipeline.smem_bytes
+  Alcotest.(check int) "smem"  131200 p.Pipeline.smem_bytes
 
 let test_make_invalid_depth () =
   Alcotest.check_raises "depth=0"

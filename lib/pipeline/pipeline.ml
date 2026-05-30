@@ -12,7 +12,14 @@ let make (depth : int) (tile_bytes : int) : t =
   else if tile_bytes <= 0 then
     invalid_arg "tile_bytes must be > 0"
   else
-    {depth ; tile_bytes ; smem_bytes = depth * tile_bytes }
+    let data_bytes = depth * tile_bytes in
+    (* 2 arrays (full/empty) * depth * 8 bytes per mbarrier *)
+    let mbar_bytes = 2 * depth * 8 in
+    (* Hopper TMA prefers 128-byte alignments.
+       If mbar_bytes < 128, just allocate 128. *)
+    let padding = max mbar_bytes 128 in
+
+    { depth ; tile_bytes ; smem_bytes = data_bytes + padding }
 
 let stage_of (iter : int) (depth : int) : int =
   iter % depth

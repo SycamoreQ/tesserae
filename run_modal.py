@@ -44,6 +44,8 @@ def run_tesserae_tests():
     print("Build successful! Running test suite...")
 
     # Step 2: Run the tests with forced unbuffered output
+    # Step 2: Run the tests wrapped in compute-sanitizer
+    # Run the tests directly to see if the XID 13 crash is gone
     test_cmd = "eval $(opam env) && cd /workspace && dune test --force --no-buffer"
     test_result = subprocess.run(test_cmd, shell=True)
 

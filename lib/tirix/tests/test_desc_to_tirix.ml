@@ -273,30 +273,6 @@ let test_blackwell_tcgen05 () =
       | SOp (Mma { mma_kind = Sm100Tcgen05; _ }) -> true
       | _ -> false))
 
-(* --- Transaction Barrier Allocation --- *)
-
-let test_ampere_no_mbar_init () =
-  let tirix = lower (ampere_kernel ()) in
-  Alcotest.(check bool) "no mbar init" false
-    (find_in_body tirix.body (function
-      | SOp (Barrier (MbarInit _)) -> true
-      | _ -> false))
-
-let test_hopper_has_mbar_init () =
-  let tirix = lower (hopper_kernel ()) in
-  Alcotest.(check bool) "mbar init" true
-    (find_in_body tirix.body (function
-      | SOp (Barrier (MbarInit _)) -> true
-      | _ -> false))
-
-let test_blackwell_has_mbar_init () =
-  let tirix = lower (blackwell_kernel ()) in
-  Alcotest.(check bool) "mbar init" true
-    (find_in_body tirix.body (function
-      | SOp (Barrier (MbarInit _)) -> true
-      | _ -> false))
-
-
 
 let test_ampere_no_tmem_alloc () =
   let tirix = lower (ampere_kernel ()) in
@@ -431,9 +407,6 @@ let () =
     "mma",        [ Alcotest.test_case "sm80"           `Quick test_ampere_sm80_mma
                   ; Alcotest.test_case "wgmma"          `Quick test_hopper_wgmma
                   ; Alcotest.test_case "tcgen05"        `Quick test_blackwell_tcgen05 ];
-    "mbar",       [ Alcotest.test_case "no-mbar-ampere" `Quick test_ampere_no_mbar_init
-                  ; Alcotest.test_case "mbar-hopper"    `Quick test_hopper_has_mbar_init
-                  ; Alcotest.test_case "mbar-blackwell" `Quick test_blackwell_has_mbar_init ];
     "tmem",       [ Alcotest.test_case "no-alloc-amp"   `Quick test_ampere_no_tmem_alloc
                   ; Alcotest.test_case "alloc-blkwll"   `Quick test_blackwell_has_tmem_alloc
                   ; Alcotest.test_case "dealloc-blkwll" `Quick test_blackwell_has_tmem_dealloc

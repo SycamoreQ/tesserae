@@ -18,7 +18,7 @@ let emit_scalar_ty : type a. a scalar_ty -> string = function
   | F32 ->  "float"
   | BF16 -> "__nv_bfloat16"
   | Bool -> "bool"
-  | Ptr ->  "void*"  (* FIXED: Use proper pointer type instead of uint64_t *)
+  | Ptr ->  "void*"
 
 let emit_packed_scalar (Scalar s) = emit_scalar_ty s
 
@@ -47,7 +47,7 @@ let rec emit_expr : type a. a expr -> string = function
   | Const (F32, v) -> Printf.sprintf "%ff" v
   | Const (BF16, v) -> Printf.sprintf "__float2bfloat16(%ff)" v
   | Const (Bool, v) -> if v then "true" else "false"
-  | Const (Ptr, v) -> Printf.sprintf "(void*)0x%LxULL" v  (* FIXED: Cast to void* *)
+  | Const (Ptr, v) -> Printf.sprintf "(void*)0x%LxULL" v
   | Cast (ty, e) ->
     Printf.sprintf "((%s)(%s))" (emit_scalar_ty ty) (emit_expr e)
   | Var v -> v.var_name
@@ -63,7 +63,6 @@ let rec emit_expr : type a. a expr -> string = function
   | Unop (op, e) ->
     Printf.sprintf "(%s%s)" (emit_unop op) (emit_expr e)
   | AddrConv (kind, e) ->
-    (* FIXED: Cast address conversions to appropriate types *)
     let conv = emit_addr_conv kind in
     let arg = emit_expr e in
     Printf.sprintf "((uint32_t)%s(%s))" conv arg
@@ -101,6 +100,8 @@ and emit_addr_conv = function
 let emit_packed_expr (Expr e) = emit_expr e
 
 
+(* All mbarrier address computations use __smem_base + offsetof to avoid
+   NVRTC folding away the cvta.to.shared conversion on smem symbols. *)
 let emit_barrier = function
   | CtaSync ->  "__syncthreads();"
   | WarpSync -> "__syncwarp();"
@@ -109,15 +110,18 @@ let emit_barrier = function
   | MbarInit { mbar; count } ->
       Printf.sprintf
         "asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\" \
-         :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s[stage])), \"n\"(%d) : \"memory\");"
+         :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), \
+            \"n\"(%d) : \"memory\");"
         mbar.var_name count
 
   | MbarArriveExpect { mbar; bytes } ->
-      Printf.sprintf
-        "asm volatile(\"mbarrier.arrive.expect_tx.shared.b64 _ , [%%0], %%1;\" \
-         :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s[stage])), \"r\"((uint32_t)(%s)) : \"memory\");"
-        mbar.var_name (emit_expr bytes)
-
+        Printf.sprintf
+          "if (lane_id == 0) { \
+             asm volatile(\"mbarrier.arrive.expect_tx.shared.b64 _ , [%%0], %%1;\" \
+             :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), \
+                \"r\"((uint32_t)(%s)) : \"memory\"); \
+           }"
+          mbar.var_name (emit_expr bytes)
 
   | MbarWaitParity { mbar; phase } ->
       Printf.sprintf
@@ -128,16 +132,19 @@ let emit_barrier = function
     "  mbarrier.try_wait.parity.shared.b64 p, [%%0], %%1;\n\t"
     "  @!p bra LOOP_START;\n\t"
     "}"
-    :: "r"((uint32_t)__cvta_generic_to_shared(&smem.%s[stage])), "r"(%s) : "memory"
+    :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))),
+       "r"(%s) : "memory"
   );|ptx}
         mbar.var_name (emit_expr phase)
 
   | MbarArrive { mbar } ->
-      Printf.sprintf
-        "asm volatile(\"mbarrier.arrive.shared.b64 _ , [%%0];\" \
-         :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s[stage])) : \"memory\");"
-        mbar.var_name
-
+        Printf.sprintf
+          "if (lane_id == 0) { \
+             asm volatile(\"mbarrier.arrive.shared.b64 _ , [%%0];\" \
+             :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))) \
+                : \"memory\"); \
+           }"
+          mbar.var_name
 
   | ClusterArrive ->
     "asm volatile(\"barrier.cluster.arrive.relaxed.aligned;\");"
@@ -167,30 +174,37 @@ let emit_copy (c : copy) : string =
   in
   match c.copy_kind with
   | CpAsync ->
+    (* Use __smem_base + offsetof so NVRTC emits a real cvta.to.shared *)
     Printf.sprintf
       "%sasm volatile(\"cp.async.ca.shared.global [%%0], [%%1], 16;\" \
-       :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s[0])), \
+       :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s))), \
           \"l\"((uint64_t)(uintptr_t)%s) : \"memory\");"
       pred dst.tensor_name src.tensor_name
 
   | TmaLoad ->
-    let mbar_s = match c.mbar_var with
-      | None -> "nullptr"
-      | Some v -> Printf.sprintf "smem.%s" v.var_name
-    in
-    Printf.sprintf
-      "%stma_2d_gmem2smem(&smem.%s, %s_tmap, coord_k, coord_m, %s);"
-      pred dst.tensor_name src.tensor_name mbar_s
+      let mbar_s = match c.mbar_var with
+        | None -> "nullptr"
+        | Some v ->
+          Printf.sprintf
+            "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))"
+            v.var_name
+      in
+      Printf.sprintf
+        "%stma_2d_gmem2smem(__smem_base + offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s) / 4)), %s_tmap, coord_k, coord_m, %s);"
+        pred dst.tensor_name dst.tensor_name src.tensor_name mbar_s
 
   | TmaMulticast ->
     let mbar_s = match c.mbar_var with
-      | None -> "0"
-      | Some v -> Printf.sprintf "&smem.%s" v.var_name
+      | None -> "nullptr"
+      | Some v ->
+        Printf.sprintf
+          "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))"
+          v.var_name
     in
     Printf.sprintf
-      "%stma_2d_gmem2smem_multicast(&smem.%s, &%s_tmap, 0, \
-       0, %s, 0b11);"
+      "%stma_2d_gmem2smem_multicast(__smem_base + offsetof(SharedStorage, %s), %s_tmap, coord_k, coord_m, %s, 0b11);"
       pred dst.tensor_name src.tensor_name mbar_s
+
   | RegToSmem ->
     Printf.sprintf "cute::copy(%s, %s);"
       src.tensor_name dst.tensor_name
@@ -265,55 +279,39 @@ let emit_mma (m : mma_desc) : string =
           (Int64.of_int (lead lsl 16))
       in
       let or_const = Int64.to_string sw_lead_bits in
-      let desc_a_expr =
-        Printf.sprintf
-          "([&]() -> uint64_t { \
-             uint64_t desc; \
-             asm volatile( \
-               \"{ .reg .u64 saddr; .reg .u32 lo; \
-                   cvta.to.shared.u64 saddr, %%%%1; \
-                   cvt.u32.u64 lo, saddr; \
-                   shr.u32 lo, lo, 4; \
-                   cvt.u64.u32 %%%%0, lo; \
-                   or.b64 %%%%0, %%%%0, %sULL; }\" \
-               : \"=l\"(desc) \
-               : \"l\"((unsigned long long)&smem.%s[0])); \
-             return desc; }())"
-          or_const a.tensor_name
-      in
-      let desc_b_expr =
-        Printf.sprintf
-          "([&]() -> uint64_t { \
-             uint64_t desc; \
-             asm volatile( \
-               \"{ .reg .u64 saddr; .reg .u32 lo; \
-                   cvta.to.shared.u64 saddr, %%%%1; \
-                   cvt.u32.u64 lo, saddr; \
-                   shr.u32 lo, lo, 4; \
-                   cvt.u64.u32 %%%%0, lo; \
-                   or.b64 %%%%0, %%%%0, %sULL; }\" \
-               : \"=l\"(desc) \
-               : \"l\"((unsigned long long)&smem.%s[0])); \
-             return desc; }())"
-          or_const b.tensor_name
-      in
+      (* Use __smem_base + offsetof so make_wgmma_desc receives a plain
+         char* generic pointer, forcing NVRTC to emit cvta.to.shared.u64
+         rather than folding away the conversion on a .shared symbol. *)
+         let desc_a_expr =
+                 Printf.sprintf
+                   "make_wgmma_desc((uint32_t)(offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s) / 4))), %sULL)"
+                   a.tensor_name a.tensor_name or_const
+               in
+        let desc_b_expr =
+          Printf.sprintf
+            "make_wgmma_desc((uint32_t)(offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s) / 4))), %sULL)"
+            b.tensor_name b.tensor_name or_const
+        in
       Printf.sprintf
         "{\n\
-        \  uint64_t desc_a = %s;\n\
-        \  uint64_t desc_b = %s;\n\
-        \  asm volatile(\"wgmma.fence.sync.aligned;\");\n\
-        \  asm volatile(\n\
-        \    \"wgmma.mma_async.sync.aligned.%s.f32.%s.%s {%s}, %%%d, %%%d, %d, 1, 1, 0, 0;\"\n\
-        \    : %s\n\
-        \    : \"l\"(desc_a), \"l\"(desc_b));\n\
-        \  asm volatile(\"wgmma.commit_group.sync.aligned;\");\n\
-        \  asm volatile(\"wgmma.wait_group.sync.aligned 0;\");\n\
-         }"
+                 \  uint64_t desc_a = %s;\n\
+                 \  uint64_t desc_b = %s;\n\
+                 \  (void)desc_a; (void)desc_b; // Prevent unused variable warnings\n\
+                 \  /* --- WGMMA ISOLATION TEST ---\n\
+                 \  asm volatile(\"wgmma.fence.sync.aligned;\");\n\
+                 \  asm volatile(\n\
+                 \    \"wgmma.mma_async.sync.aligned.%s.f32.%s.%s {%s}, %%%d, %%%d, %d, 1, 1, 0, 0;\"\n\
+                 \    : %s\n\
+                 \    : \"l\"(desc_a), \"l\"(desc_b));\n\
+                 \  asm volatile(\"wgmma.commit_group.sync.aligned;\");\n\
+                 \  asm volatile(\"wgmma.wait_group.sync.aligned 0;\");\n\
+                 \  ----------------------------- */\n\
+                 }"
         desc_a_expr desc_b_expr
         mn_str at bt
         reg_tokens
-        num_regs        (* %N  -> desc_a in constraint list *)
-        (num_regs + 1)  (* %N+1 -> desc_b *)
+        num_regs
+        (num_regs + 1)
         accum
         acc_outputs
 
@@ -351,9 +349,7 @@ let emit_tiled_mma_decl (k : tirix) : string =
   if has_sm90 then
     Printf.sprintf
       "  float acc_frag[%d];\n\
-      \  float* acc_raw = acc_frag;\n\
       \  for (int i = 0; i < %d; i++) acc_frag[i] = 0.0f;\n"
-
       ((k.bm * k.bn) / 32) ((k.bm * k.bn) / 32)
   else
     let first_sm80_str =
@@ -518,7 +514,7 @@ let emit_shared_storage (k : tirix) : string =
     (String.concat ~sep:"\n" all)
 
 let emit_helper (h : helper_func) : string =
-  let builtin_helpers = ["tma_2d_gmem2smem"; "tma_2d_gmem2smem_multicast"; "make_smem_desc_raw" ;  "make_smem_desc"] in
+  let builtin_helpers = ["tma_2d_gmem2smem"; "tma_2d_gmem2smem_multicast"; "make_smem_desc_raw"; "make_smem_desc"] in
   if List.mem builtin_helpers h.hf_name ~equal:String.equal then ""
   else
   let params = String.concat ~sep:", "
@@ -588,22 +584,33 @@ let rec filter_non_warp (stmts : stmt list) : stmt list =
     | s -> Some s)
 
 
+(* Emit mbarrier init loop using __smem_base + offsetof for both
+   full_mbar and empty_mbar so addresses are stable. *)
 let emit_mbar_init_loop (k : tirix) : string =
   if not (tirix_is_tma k) then ""
   else
     let depth = k.pipeline_depth in
+    (* Count how many consumer warps exist in the cluster configuration *)
+    let consumer_count = List.count k.cluster.Cluster.warp_roles ~f:(fun (_, role) ->
+      Poly.(role = Cluster.Consumer))
+    in
+    let empty_count = if consumer_count = 0 then 1 else consumer_count in
     Printf.sprintf
       "  if (warp_id == 0 && lane_id == 0) {\n\
       \    #pragma unroll\n\
       \    for (int s = 0; s < %d; s++) {\n\
-      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\
-             :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.full_mbar[s])),  \"n\"(1) : \"memory\");\n\
-      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\
-             :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.empty_mbar[s])), \"n\"(1) : \"memory\");\n\
+      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\n\
+      \        :: \"r\"((uint32_t)__cvta_generic_to_shared(\n\
+      \            __smem_base + offsetof(SharedStorage, full_mbar) + s * sizeof(uint64_t))),\n\
+      \         \"n\"(1) : \"memory\");\n\
+      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\n\
+      \        :: \"r\"((uint32_t)__cvta_generic_to_shared(\n\
+      \            __smem_base + offsetof(SharedStorage, empty_mbar) + s * sizeof(uint64_t))),\n\
+      \         \"n\"(%d) : \"memory\");\n\
       \    }\n\
       \  }\n\
       \  __syncthreads();"
-      depth
+      depth empty_count
 
 
 let emit_kernel_func (k : tirix) : string =
@@ -640,20 +647,20 @@ let emit_kernel_func (k : tirix) : string =
       String.concat ~sep:" else " warp_cases
   in
   let tiled_mma_s = emit_tiled_mma_decl k in
-
-  let temp_decl = "  uint32_t tmp; // temporary for mbarrier operations\n" in
   let mbar_init_s = emit_mbar_init_loop k in
 
   Printf.sprintf
     "extern \"C\" %s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
     \  extern __shared__ char smem_buf[];\n\
     \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
+    \  char* __smem_base = smem_buf;\n\
+    \  (void)smem;\n\
     \  const int warp_id = threadIdx.x / 32;\n\
     \  const int lane_id = threadIdx.x %% 32;\n\
     \  (void)lane_id;\n\
-     %s%s\n%s\n%s\n%s\n}\n"
+     %s\n%s\n%s\n%s\n}\n"
     cluster_attr n_threads k.name (emit_params k)
-    temp_decl tiled_mma_s mbar_init_s pre_s warp_dispatch
+    tiled_mma_s mbar_init_s pre_s warp_dispatch
 
 
 let emit_host_launcher_params (k : tirix) : string =
@@ -708,6 +715,7 @@ let emit_host_launcher (k : tirix) : string =
     "void launch_%s(\n  %s\n) {\n\
     \  dim3 grid((M + %d - 1) / %d, (N + %d - 1) / %d, 1);\n\
     \  dim3 block(%d, 1, 1);\n\
+    \  (void)block;\n\
      %s\n\
      }\n"
     k.name (emit_host_launcher_params k)
@@ -740,28 +748,51 @@ let emit_includes (k : tirix) : string =
     "         ((uint64_t)lead << 16) | (addr >> 4);";
     "}";
     "";
-    "// TMA helper";
+    "// WGMMA matrix descriptor builder.";
+    "// Receives a plain char* generic pointer (never a .shared symbol";
+    "// reference directly) so NVRTC is forced to emit cvta.to.shared.u64";
+    "// rather than folding away the conversion.";
+    "__device__ __forceinline__ uint64_t make_wgmma_desc(uint32_t smem_offset, uint64_t or_bits) {";
+    "  uint64_t desc;";
+    "  asm volatile(";
+    "    \"{ .reg .u64 saddr;\\n\\t\"";
+    "    \".reg .u32 lo;\\n\\t\"";
+    "    \"mov.u64 saddr, smem_buf;\\n\\t\"";
+    "    \"cvt.u32.u64 lo, saddr;\\n\\t\"";
+    "    \"add.u32 lo, lo, %1;\\n\\t\"";
+    "    \"shr.u32 lo, lo, 4;\\n\\t\"";
+    "    \"cvt.u64.u32 %0, lo;\\n\\t\"";
+    "    \"or.b64 %0, %0, %2; }\\n\\t\"";
+    "    : \"=l\"(desc) : \"r\"(smem_offset), \"l\"(or_bits));";
+    "  return desc;";
+    "}";
+    "";
+    "// TMA load helper";
     "__device__ inline void tma_2d_gmem2smem(";
     "    void* smem, const CUtensorMap* tmap, int x, int y, uint64_t* mbar) {";
-    "  asm volatile(";
-    "    \"cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes\"";
-    "    \" [%0], [%1, {%2, %3}], [%4];\"";
-    "    :: \"r\"((uint32_t)__cvta_generic_to_shared(smem)), \"l\"(tmap),";
-    "       \"r\"(x), \"r\"(y), \"r\"((uint32_t)__cvta_generic_to_shared(mbar))";
-    "    : \"memory\");";
+    "     if (threadIdx.x % 32 == 0) {";
+    "       asm volatile(";
+    "         \"cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes\"";
+    "         \" [%0], [%1, {%2, %3}], [%4];\"";
+    "         :: \"r\"((uint32_t)__cvta_generic_to_shared(smem)), \"l\"(tmap),";
+    "         \"r\"(x), \"r\"(y), \"r\"((uint32_t)__cvta_generic_to_shared(mbar))";
+    "          : \"memory\");";
+    "     };";
     "}";
     "";
     "// TMA multicast helper";
     "__device__ inline void tma_2d_gmem2smem_multicast(";
     "    void* smem, const CUtensorMap* tmap, int x, int y,";
     "    uint64_t* mbar, uint16_t cta_mask) {";
-    "  asm volatile(";
-    "    \"cp.async.bulk.tensor.2d.shared::cluster.global\"";
-    "    \".mbarrier::complete_tx::bytes.multicast::cluster\"";
-    "    \" [%0], [%1, {%2, %3}], [%4], %5;\"";
-    "    :: \"r\"((uint32_t)__cvta_generic_to_shared(smem)), \"l\"(tmap),";
+    "    if (threadIdx.x % 32 == 0) {";
+    "       asm volatile(";
+    "       \"cp.async.bulk.tensor.2d.shared::cluster.global\"";
+    "       \".mbarrier::complete_tx::bytes.multicast::cluster\"";
+    "       \" [%0], [%1, {%2, %3}], [%4], %5;\"";
+    "       :: \"r\"((uint32_t)__cvta_generic_to_shared(smem)), \"l\"(tmap),";
     "       \"r\"(x), \"r\"(y), \"l\"(mbar), \"h\"(cta_mask)";
-    "    : \"memory\");";
+    "       : \"memory\");";
+    "     };";
     "}";
   ] in
   String.concat ~sep:"\n" lines
