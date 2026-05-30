@@ -107,16 +107,17 @@ let emit_barrier = function
   | MemFence -> "__threadfence();"
 
   | MbarInit { mbar; count } ->
-    Printf.sprintf
-      "asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\" \
-       :: \"r\"((uint32_t)__cvta_generic_to_shared(smem.%s)), \"n\"(%d) : \"memory\");"
-      mbar.var_name count
+      Printf.sprintf
+        "asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\" \
+         :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s[stage])), \"n\"(%d) : \"memory\");"
+        mbar.var_name count
 
   | MbarArriveExpect { mbar; bytes } ->
-    Printf.sprintf
-      "asm volatile(\"mbarrier.arrive.expect_tx.shared.b64 _ ,  [%%0], %%1;\" \
-       :: \"r\"((uint32_t)__cvta_generic_to_shared(smem.%s)), \"r\"(%s) : \"memory\");"
-      mbar.var_name (emit_expr bytes)
+      Printf.sprintf
+        "asm volatile(\"mbarrier.arrive.expect_tx.shared.b64 _ , [%%0], %%1;\" \
+         :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s[stage])), \"r\"((uint32_t)(%s)) : \"memory\");"
+        mbar.var_name (emit_expr bytes)
+
 
   | MbarWaitParity { mbar; phase } ->
       Printf.sprintf
@@ -132,10 +133,10 @@ let emit_barrier = function
         mbar.var_name (emit_expr phase)
 
   | MbarArrive { mbar } ->
-    Printf.sprintf
-      "asm volatile(\"mbarrier.arrive.shared.b64 _ , [%%0];\" \
-       :: \"r\"((uint32_t)__cvta_generic_to_shared(smem.%s)) : \"memory\");"
-      mbar.var_name
+      Printf.sprintf
+        "asm volatile(\"mbarrier.arrive.shared.b64 _ , [%%0];\" \
+         :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s[stage])) : \"memory\");"
+        mbar.var_name
 
 
   | ClusterArrive ->
@@ -238,37 +239,63 @@ let emit_mma (m : mma_desc) : string =
   | Sm90Wgmma ->
       let (Tensor a) = m.tensor_a in
       let (Tensor b) = m.tensor_b in
-      let (mn_str, at, bt, num_regs) = match m.mma_atom with
+      let (mn_str, at, bt, num_regs, k_val) = match m.mma_atom with
         | Atom90 atom ->
           let (_, n, k) = Mma_atom.shape atom in
-          (* n_acc = n/2 for f32 accumulators, per PTX ISA wgmma table *)
           let num_regs = n / 2 in
           let at = String.lowercase (Mma_atom.elem_string atom.Mma_atom.a_type) in
           let bt = String.lowercase (Mma_atom.elem_string atom.Mma_atom.b_type) in
-          (Printf.sprintf "m64n%dk%d" n k, at, bt, num_regs)
+          (Printf.sprintf "m64n%dk%d" n k, at, bt, num_regs, k)
         | _ -> failwith "emit_mma: Sm90Wgmma requires Atom90"
       in
       let accum = if m.accum_flag then 1 else 0 in
-      (* Accumulator register operands: %0 .. %num_regs-1 *)
+      (* lead = number of 16-byte units in the K dimension *)
+      let lead = (k_val * 2) / 16 in
       let reg_tokens =
         List.init num_regs ~f:(fun i -> Printf.sprintf "%%%d" i)
         |> String.concat ~sep:", "
       in
-      (* desc_a = input at index num_regs, desc_b at num_regs+1 *)
       let acc_outputs =
-        List.init num_regs ~f:(fun i ->
-          Printf.sprintf "\"+f\"(acc_frag[%d])" i)
+        List.init num_regs ~f:(fun i -> Printf.sprintf "\"+f\"(acc_frag[%d])" i)
         |> String.concat ~sep:", "
       in
+      let sw_lead_bits =
+        Int64.bit_or
+          (Int64.shift_left 2L 52)
+          (Int64.of_int (lead lsl 16))
+      in
+      let or_const = Int64.to_string sw_lead_bits in
       let desc_a_expr =
-        Printf.sprintf "make_smem_desc_raw(&smem.%s[0], %d, 0, 2)"
-          a.tensor_name
-          (* leading byte offset for swizzle=128B: k * sizeof(elem) *)
-          16  (* for bf16/f16: k=16 * 2 bytes = 32, but descriptor uses 128B units *)
+        Printf.sprintf
+          "([&]() -> uint64_t { \
+             uint64_t desc; \
+             asm volatile( \
+               \"{ .reg .u64 saddr; .reg .u32 lo; \
+                   cvta.to.shared.u64 saddr, %%%%1; \
+                   cvt.u32.u64 lo, saddr; \
+                   shr.u32 lo, lo, 4; \
+                   cvt.u64.u32 %%%%0, lo; \
+                   or.b64 %%%%0, %%%%0, %sULL; }\" \
+               : \"=l\"(desc) \
+               : \"l\"((unsigned long long)&smem.%s[0])); \
+             return desc; }())"
+          or_const a.tensor_name
       in
       let desc_b_expr =
-        Printf.sprintf "make_smem_desc_raw(&smem.%s[0], %d, 0, 2)"
-          b.tensor_name 16
+        Printf.sprintf
+          "([&]() -> uint64_t { \
+             uint64_t desc; \
+             asm volatile( \
+               \"{ .reg .u64 saddr; .reg .u32 lo; \
+                   cvta.to.shared.u64 saddr, %%%%1; \
+                   cvt.u32.u64 lo, saddr; \
+                   shr.u32 lo, lo, 4; \
+                   cvt.u64.u32 %%%%0, lo; \
+                   or.b64 %%%%0, %%%%0, %sULL; }\" \
+               : \"=l\"(desc) \
+               : \"l\"((unsigned long long)&smem.%s[0])); \
+             return desc; }())"
+          or_const b.tensor_name
       in
       Printf.sprintf
         "{\n\
@@ -529,15 +556,6 @@ let rec collect_warp_groups (stmts : stmt list) : (Cluster.warp_role * stmt list
       collect_warp_groups prologue @ collect_warp_groups mainloop @ collect_warp_groups epilogue
     | _ -> [])
 
-let rec filter_non_warp (stmts : stmt list) : stmt list =
-  List.filter_map stmts ~f:(function
-    | SWarpGroup _ -> None
-    | SSeq ss ->
-      let filtered = filter_non_warp ss in
-      if List.is_empty filtered then None else Some (SSeq filtered)
-    | s -> Some s)
-
-
 let rec filter_builtin_vars (stmts : stmt list) : stmt list =
   List.filter_map stmts ~f:(function
     | SLet (v, _) | SLetMut (v, _) when
@@ -555,6 +573,37 @@ let rec filter_builtin_vars (stmts : stmt list) : stmt list =
       if List.is_empty filtered then None else Some (SSeq filtered)
     | s -> Some s)
 
+
+let rec filter_non_warp (stmts : stmt list) : stmt list =
+  List.filter_map stmts ~f:(function
+    | SWarpGroup _ -> None
+    | SIf (cond, thn, els) ->
+      let thn' = filter_non_warp thn in
+      let els' = filter_non_warp els in
+      if List.is_empty thn' && List.is_empty els' then None
+      else Some (SIf (cond, thn', els'))
+    | SSeq ss ->
+      let filtered = filter_non_warp ss in
+      if List.is_empty filtered then None else Some (SSeq filtered)
+    | s -> Some s)
+
+
+let emit_mbar_init_loop (k : tirix) : string =
+  if not (tirix_is_tma k) then ""
+  else
+    let depth = k.pipeline_depth in
+    Printf.sprintf
+      "  if (warp_id == 0 && lane_id == 0) {\n\
+      \    #pragma unroll\n\
+      \    for (int s = 0; s < %d; s++) {\n\
+      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\
+             :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.full_mbar[s])),  \"n\"(1) : \"memory\");\n\
+      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\
+             :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.empty_mbar[s])), \"n\"(1) : \"memory\");\n\
+      \    }\n\
+      \  }\n\
+      \  __syncthreads();"
+      depth
 
 
 let emit_kernel_func (k : tirix) : string =
@@ -593,6 +642,7 @@ let emit_kernel_func (k : tirix) : string =
   let tiled_mma_s = emit_tiled_mma_decl k in
 
   let temp_decl = "  uint32_t tmp; // temporary for mbarrier operations\n" in
+  let mbar_init_s = emit_mbar_init_loop k in
 
   Printf.sprintf
     "extern \"C\" %s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
@@ -601,9 +651,9 @@ let emit_kernel_func (k : tirix) : string =
     \  const int warp_id = threadIdx.x / 32;\n\
     \  const int lane_id = threadIdx.x %% 32;\n\
     \  (void)lane_id;\n\
-     %s%s\n%s\n%s\n}\n"
+     %s%s\n%s\n%s\n%s\n}\n"
     cluster_attr n_threads k.name (emit_params k)
-    temp_decl tiled_mma_s pre_s warp_dispatch
+    temp_decl tiled_mma_s mbar_init_s pre_s warp_dispatch
 
 
 let emit_host_launcher_params (k : tirix) : string =

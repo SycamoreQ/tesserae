@@ -28,6 +28,7 @@ app = modal.App("tesserae-gpu-runner")
         "C_INCLUDE_PATH": "/usr/include:/usr/include/x86_64-linux-gnu:/usr/local/cuda/include",
         "CPLUS_INCLUDE_PATH": "/usr/include:/usr/include/x86_64-linux-gnu:/usr/local/cuda/include",
         "CUTLASS_PATH": "/tmp/cutlass_latest/include",
+        "CUDA_LAUNCH_BLOCKING": "1",
     },
 )
 def run_tesserae_tests():
