@@ -1,7 +1,7 @@
 (library
  (name tesserae_runtime)
  (wrapped true)
- (libraries base stdio unix tesserae_core tesserae_kernel tesserae_backend)
+ (libraries base stdio unix tesserae_core tesserae_kernel tesserae_backend tesserae_test_kernels)
  (foreign_stubs
   (language c)
   (names nvrtc_stub gpu_buffer_stubs)

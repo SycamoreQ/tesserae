@@ -218,6 +218,10 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
         dst_tensor = make_shared_tensor "smem" (elem_type_of desc) 128 32 4;
         pred_expr = None;
         mbar_var= Some (mk_var "mbar" U64 ());
+        tma_coord_k = None;
+        tma_coord_m = None;
+        tma_coord_n = None;
+        stage_var = None;
       });
     ];
   } in
@@ -237,6 +241,10 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
         dst_tensor = make_shared_tensor "smem" (elem_type_of desc) 128 32 4;
         pred_expr = None;
         mbar_var = Some (mk_var "mbar" U64 ());
+        tma_coord_k = None;
+        tma_coord_m = None;
+        tma_coord_n = None;
+        stage_var = None;
       });
     ];
   } in
@@ -244,7 +252,6 @@ let construct_helpers (desc : (_, _, _, _, _, _) Kernel_desc.t) =
   | true,  true -> [ make_smem_desc_fn; tma_load_fn; tma_multicast_fn ]
   | false, true -> [ make_smem_desc_fn; tma_load_fn ]
   | _,     false -> []
-
 
 let construct_producer_body
     (desc : (_, _, _, _, _, _) Kernel_desc.t)
@@ -282,13 +289,22 @@ let construct_producer_body
             src_tensor = a_tensor;
             dst_tensor = smem_a;
             pred_expr = None;
-            mbar_var = Some mbar; })
+            mbar_var = Some mbar;
+            tma_coord_k = Some (Var k_var);
+            tma_coord_m = Some (Var (find "row"));
+            tma_coord_n = None;
+            stage_var = Some stage_var; })
       ; SOp (Copy {
             copy_kind = TmaMulticast;
             src_tensor = b_tensor;
             dst_tensor = smem_b;
             pred_expr = None;
-            mbar_var = Some mbar; }) ]
+            mbar_var = Some mbar;
+            tma_coord_k = Some (Var k_var);
+            tma_coord_m = None;
+            tma_coord_n = Some (Var (find "col"));
+            stage_var = Some stage_var; }) ]
+
     | true, false ->
       let mbar = find "full_mbar" in
       [ SOp (Barrier (MbarArriveExpect {
@@ -301,28 +317,46 @@ let construct_producer_body
             src_tensor = a_tensor;
             dst_tensor = smem_a;
             pred_expr = None;
-            mbar_var = Some mbar; })
+            mbar_var = Some mbar;
+            tma_coord_k = Some (Var k_var);
+            tma_coord_m = Some (Var (find "row"));
+            tma_coord_n = None;
+            stage_var = Some stage_var; })
       ; SOp (Copy {
             copy_kind = TmaLoad;
             src_tensor = b_tensor;
             dst_tensor = smem_b;
             pred_expr = None;
-            mbar_var = Some mbar; }) ]
+            mbar_var = Some mbar;
+            tma_coord_k = Some (Var k_var);
+            tma_coord_m = None;
+            tma_coord_n = Some (Var (find "col"));
+            stage_var = Some stage_var; }) ]
+
     | false, _ ->
       [ SOp (Copy {
             copy_kind = CpAsync;
             src_tensor = a_tensor;
             dst_tensor = smem_a;
             pred_expr = None;
-            mbar_var = None; })
+            mbar_var = None;
+            tma_coord_k = None;
+            tma_coord_m = None;
+            tma_coord_n = None;
+            stage_var = None; })
       ; SOp (Copy {
             copy_kind = CpAsync;
             src_tensor = b_tensor;
             dst_tensor = smem_b;
             pred_expr = None;
-            mbar_var = None; })
+            mbar_var = None;
+            tma_coord_k = None;
+            tma_coord_m = None;
+            tma_coord_n = None;
+            stage_var = None; })
       ; SOp (Barrier CpAsyncCommitGroup) ]
   in
+
   let loop_body = let_stage :: copy_ops in
   SWarpGroup (Cluster.Producer, [
     SLetMut (stage_var, Expr (Const (S32, 0l)));
@@ -356,8 +390,8 @@ let construct_consumer_body
   in
   (* Step by atom_k, not 1 — avoids full unroll of 32 iterations *)
   let atom_k = match packed_atom_of_desc desc with
-    | Atom90  a -> let (_, _, k) = Mma_atom.shape a in k
-    | Atom80  a -> let (_, _, k) = Mma_atom.shape a in k
+    | Atom90 a -> let (_, _, k) = Mma_atom.shape a in k
+    | Atom80 a -> let (_, _, k) = Mma_atom.shape a in k
     | Atom100 a -> let (_, _, k) = Mma_atom.shape a in k
   in
   let bk    = desc.Kernel_desc.bk in

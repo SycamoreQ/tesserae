@@ -21,7 +21,7 @@ let ampere_kernel () =
 let hopper_kernel () =
   Kernel_ast.make
     ~name:"gemm_hopper"
-    ~arch:Kernel_ast.SM90
+    ~arch:Kernel_ast.SM90a
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
@@ -34,7 +34,7 @@ let hopper_kernel () =
 let blackwell_kernel () =
   Kernel_ast.make
     ~name:"gemm_blackwell"
-    ~arch:Kernel_ast.SM100
+    ~arch:Kernel_ast.SM100a
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 64 }
     ~stages:4
@@ -251,12 +251,16 @@ let test_copy_unknown_src_for_arch arch name =
   } in
   let tir = { (mk_tir_minimal arch) with body = [
     SOp (Copy {
-      copy_kind  = CpAsync;
-      src_tensor = ghost;
-      dst_tensor = dst;
-      pred_expr  = None;
-      mbar_var   = None;
-    })
+          copy_kind  = CpAsync;
+          src_tensor = ghost;
+          dst_tensor = dst;
+          pred_expr  = None;
+          mbar_var   = None;
+          tma_coord_k = None;
+          tma_coord_m = None;
+          tma_coord_n = None;
+          stage_var = None;
+        })
   ]} in
   Alcotest.(check bool) name true
     (Result.is_error (Tirix_verify.verify tir))

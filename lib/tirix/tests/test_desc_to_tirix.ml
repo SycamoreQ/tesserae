@@ -21,7 +21,7 @@ let ampere_kernel () =
 let hopper_kernel () =
   Kernel_ast.make
     ~name:"gemm_hopper"
-    ~arch:Kernel_ast.SM90
+    ~arch:Kernel_ast.SM90a
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 64 }
     ~stages:4
@@ -33,7 +33,7 @@ let hopper_kernel () =
 let blackwell_kernel () =
   Kernel_ast.make
     ~name:"gemm_blackwell"
-    ~arch:Kernel_ast.SM100
+    ~arch:Kernel_ast.SM100a
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 256; k = 64 }
     ~stages:4

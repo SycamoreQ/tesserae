@@ -199,6 +199,10 @@ let test_op_copy_cp_async () =
   ; dst_tensor = dst
   ; pred_expr  = None
   ; mbar_var   = None
+  ; tma_coord_k = None
+  ; tma_coord_m = None
+  ; tma_coord_n = None
+  ; stage_var = None
   } in
   match op with
   | Copy c -> Alcotest.(check bool) "cp async" true

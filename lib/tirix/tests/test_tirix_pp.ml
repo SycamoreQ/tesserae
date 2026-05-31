@@ -260,10 +260,12 @@ let test_pp_op_copy_cp_async () =
   let src = make_tensor "A"      Elemtype.Float16 Memspace.Global in
   let dst = make_tensor "smem_A" Elemtype.Float16 Memspace.Shared in
   let s = Tirix_pp.pp_op (Copy {
-    copy_kind  = CpAsync
-  ; src_tensor = src; dst_tensor = dst
-  ; pred_expr  = None; mbar_var  = None
-  }) in
+      copy_kind  = CpAsync
+    ; src_tensor = src; dst_tensor = dst
+    ; pred_expr  = None; mbar_var  = None
+    ; tma_coord_k = None; tma_coord_m = None
+    ; tma_coord_n = None; stage_var = None
+    }) in
   Alcotest.(check bool) "cp.async"  true (contains "cp.async" s);
   Alcotest.(check bool) "src A"     true (contains "A"        s);
   Alcotest.(check bool) "dst smem_A" true (contains "smem_A"  s)
@@ -272,20 +274,24 @@ let test_pp_op_copy_tma () =
   let src = make_tensor "A"      Elemtype.Float16 Memspace.Global in
   let dst = make_tensor "smem_A" Elemtype.Float16 Memspace.Shared in
   let s = Tirix_pp.pp_op (Copy {
-    copy_kind  = TmaLoad
-  ; src_tensor = src; dst_tensor = dst
-  ; pred_expr  = None; mbar_var  = None
-  }) in
+      copy_kind  = CpAsync
+    ; src_tensor = src; dst_tensor = dst
+    ; pred_expr  = None; mbar_var  = None
+    ; tma_coord_k = None; tma_coord_m = None
+    ; tma_coord_n = None; stage_var = None
+    }) in
   Alcotest.(check bool) "tma.load" true (contains "tma" s)
 
 let test_pp_op_copy_multicast () =
   let src = make_tensor "A"      Elemtype.Float16 Memspace.Global in
   let dst = make_tensor "smem_A" Elemtype.Float16 Memspace.Shared in
   let s = Tirix_pp.pp_op (Copy {
-    copy_kind  = TmaMulticast
-  ; src_tensor = src; dst_tensor = dst
-  ; pred_expr  = None; mbar_var  = None
-  }) in
+      copy_kind  = CpAsync
+    ; src_tensor = src; dst_tensor = dst
+    ; pred_expr  = None; mbar_var  = None
+    ; tma_coord_k = None; tma_coord_m = None
+    ; tma_coord_n = None; stage_var = None
+    })in
   Alcotest.(check bool) "multicast" true (contains "multicast" s)
 
 let test_pp_op_mma_sm80 () =

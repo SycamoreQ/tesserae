@@ -37,7 +37,7 @@ let run (k : Kernel_ast.kernel) ~m ~n ~k_ ~a ~b =
       (* Compute launch parameters from the correct descriptor *)
       let smem_allocated, n_threads =
         match k.Kernel_ast.arch with
-        | Kernel_ast.SM90 ->
+        | Kernel_ast.SM90a ->
           let d = Kernel_desc.make_hopper
             ~name:k.Kernel_ast.name ~bm ~bn ~bk
             ~elem:Elemtype.Float16 ~m ~n ~k:k_ in
@@ -47,7 +47,7 @@ let run (k : Kernel_ast.kernel) ~m ~n ~k_ ~a ~b =
             ~name:k.Kernel_ast.name ~bm ~bn ~bk
             ~elem:Elemtype.Float16 ~m ~n ~k:k_ in
           (Kernel_desc.smem_bytes d, Cluster.thread_count d.Kernel_desc.cluster)
-        | Kernel_ast.SM100 ->
+        | Kernel_ast.SM100a ->
           let d = Kernel_desc.make_blackwell
             ~name:k.Kernel_ast.name ~bm ~bn ~bk
             ~elem:Elemtype.Float16 ~m ~n ~k:k_ in

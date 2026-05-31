@@ -24,13 +24,13 @@ let pp_error fmt = function
 
 let arch_to_strategy : Kernel_ast.arch -> Tile_io.strategy = function
   | Kernel_ast.SM80  -> Tile_io.CpAsync
-  | Kernel_ast.SM90 -> Tile_io.TmaLoad
-  | Kernel_ast.SM100 -> Tile_io.TmaMulticast
+  | Kernel_ast.SM90a -> Tile_io.TmaLoad
+  | Kernel_ast.SM100a -> Tile_io.TmaMulticast
 
 let arch_to_accum : Kernel_ast.arch -> Tile_op.accum_loc = function
   | Kernel_ast.SM80 -> Tile_op.Registers
-  | Kernel_ast.SM90 -> Tile_op.Registers
-  | Kernel_ast.SM100 -> Tile_op.TensorMem
+  | Kernel_ast.SM90a -> Tile_op.Registers
+  | Kernel_ast.SM100a -> Tile_op.TensorMem
 
 (** Extract problem dims — default to tile*32 if not inferable *)
 let infer_m (k : Kernel_ast.kernel) : int =
@@ -73,21 +73,21 @@ let lower (k : Kernel_ast.kernel) : (packed, error) Result.t =
     Ok (Pack (Kernel_desc.make_ampere ~name ~bm ~bn ~bk ~elem:Elemtype.Bfloat16 ~m ~n ~k:kk))
   | Kernel_ast.SM80, Kernel_ast.S8 ->
     Ok (Pack (Kernel_desc.make_ampere ~name ~bm ~bn ~bk ~elem:Elemtype.Int8 ~m ~n ~k:kk))
-  | Kernel_ast.SM90, Kernel_ast.F16 ->
+  | Kernel_ast.SM90a, Kernel_ast.F16 ->
     Ok (Pack (Kernel_desc.make_hopper ~name ~bm ~bn ~bk ~elem:Elemtype.Float16 ~m ~n ~k:kk))
-  | Kernel_ast.SM90, Kernel_ast.BF16 ->
+  | Kernel_ast.SM90a, Kernel_ast.BF16 ->
     Ok (Pack (Kernel_desc.make_hopper ~name ~bm ~bn ~bk ~elem:Elemtype.Bfloat16 ~m ~n ~k:kk))
-  | Kernel_ast.SM100, Kernel_ast.F16 ->
+  | Kernel_ast.SM100a, Kernel_ast.F16 ->
     Ok (Pack (Kernel_desc.make_blackwell ~name ~bm ~bn ~bk ~elem:Elemtype.Float16 ~m ~n ~k:kk))
-  | Kernel_ast.SM100, Kernel_ast.BF16 ->
+  | Kernel_ast.SM100a, Kernel_ast.BF16 ->
     Ok (Pack (Kernel_desc.make_blackwell ~name ~bm ~bn ~bk ~elem:Elemtype.Bfloat16 ~m ~n ~k:kk))
-  | Kernel_ast.SM100, Kernel_ast.S8 ->
+  | Kernel_ast.SM100a, Kernel_ast.S8 ->
     Ok (Pack (Kernel_desc.make_blackwell ~name ~bm ~bn ~bk ~elem:Elemtype.Int8 ~m ~n ~k:kk))
   | arch, elem ->
     let arch_s = match arch with
       | Kernel_ast.SM80  -> "SM80"
-      | Kernel_ast.SM90  -> "SM90"
-      | Kernel_ast.SM100 -> "SM100"
+      | Kernel_ast.SM90a  -> "SM90a"
+      | Kernel_ast.SM100a -> "SM100a"
     in
     let elem_s = match elem with
       | Kernel_ast.F16  -> "F16"  | Kernel_ast.BF16 -> "BF16"

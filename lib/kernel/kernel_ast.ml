@@ -2,8 +2,8 @@ open Base
 
 type arch =
   | SM80
-  | SM90
-  | SM100
+  | SM90a
+  | SM100a
 
 type elem =
   | F16
@@ -93,8 +93,8 @@ let warp_dispatch cases =
 
 let arch_str = function
   | SM80  -> "SM80"
-  | SM90  -> "SM90"
-  | SM100 -> "SM100"
+  | SM90a  -> "SM90a"
+  | SM100a -> "SM100a"
 
 let elem_str = function
   | F16  -> "f16"

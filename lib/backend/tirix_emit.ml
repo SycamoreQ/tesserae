@@ -169,12 +169,11 @@ let emit_copy (c : copy) : string =
   let (Tensor src) = c.src_tensor in
   let (Tensor dst) = c.dst_tensor in
   let pred = match c.pred_expr with
-    | None ->   ""
+    | None -> ""
     | Some p -> Printf.sprintf "if (%s) " (emit_expr p)
   in
   match c.copy_kind with
   | CpAsync ->
-    (* Use __smem_base + offsetof so NVRTC emits a real cvta.to.shared *)
     Printf.sprintf
       "%sasm volatile(\"cp.async.ca.shared.global [%%0], [%%1], 16;\" \
        :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s))), \
@@ -182,28 +181,54 @@ let emit_copy (c : copy) : string =
       pred dst.tensor_name src.tensor_name
 
   | TmaLoad ->
-      let mbar_s = match c.mbar_var with
-        | None -> "nullptr"
-        | Some v ->
-          Printf.sprintf
-            "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))"
-            v.var_name
-      in
-      Printf.sprintf
-        "%stma_2d_gmem2smem(__smem_base + offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s) / 4)), %s_tmap, coord_k, coord_m, %s);"
-        pred dst.tensor_name dst.tensor_name src.tensor_name mbar_s
-
-  | TmaMulticast ->
+    let coord_k = match c.tma_coord_k with
+      | Some e -> emit_expr e
+      | None -> "0"
+    in
+    let coord_m = match c.tma_coord_m with
+      | Some e -> emit_expr e
+      | None -> "0"
+    in
+    let stage_off = match c.stage_var with
+      | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s) / 4))" v.var_name dst.tensor_name
+      | None -> ""
+    in
     let mbar_s = match c.mbar_var with
       | None -> "nullptr"
       | Some v ->
-        Printf.sprintf
-          "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))"
-          v.var_name
+        Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s))" v.var_name
     in
     Printf.sprintf
-      "%stma_2d_gmem2smem_multicast(__smem_base + offsetof(SharedStorage, %s), %s_tmap, coord_k, coord_m, %s, 0b11);"
-      pred dst.tensor_name src.tensor_name mbar_s
+      "%stma_2d_gmem2smem(__smem_base + offsetof(SharedStorage, %s)%s, \
+       %s_tmap, %s, %s, %s);"
+      pred dst.tensor_name stage_off src.tensor_name coord_k coord_m mbar_s
+
+  | TmaMulticast ->
+    let coord_k = match c.tma_coord_k with
+      | Some e -> emit_expr e
+      | None -> "0"
+    in
+    let _coord_m = match c.tma_coord_m with
+      | Some e -> emit_expr e
+      | None -> "0"
+    in
+    let coord_n = match c.tma_coord_n with
+      | Some e -> emit_expr e
+      | None -> "0"
+    in
+    let stage_off = match c.stage_var with
+      | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s) / 4))" v.var_name dst.tensor_name
+      | None -> ""
+    in
+    let mbar_s = match c.mbar_var with
+      | None -> "nullptr"
+      | Some v ->
+        Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s))" v.var_name
+    in
+    Printf.sprintf
+      "%stma_2d_gmem2smem_multicast(__smem_base + offsetof(SharedStorage, %s)%s, \
+       %s_tmap, %s, %s, %s, 0b11);"
+      pred dst.tensor_name stage_off src.tensor_name coord_k coord_n mbar_s
 
   | RegToSmem ->
     Printf.sprintf "cute::copy(%s, %s);"

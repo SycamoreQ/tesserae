@@ -38,7 +38,7 @@ let ampere_gemm () =
 let blackwell_gemm () =
   Kernel_ast.make
     ~name:"gemm_bf16_blackwell"
-    ~arch:Kernel_ast.SM100
+    ~arch:Kernel_ast.SM100a
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 256; k = 64 }
     ~stages:4
@@ -173,7 +173,7 @@ let test_pp_blackwell () =
       if String.sub str i n = sub then found := true
     done; !found
   in
-  Alcotest.(check bool) "has SM100"   true (contains "SM100" s);
+  Alcotest.(check bool) "has SM100a"   true (contains "SM100a" s);
   Alcotest.(check bool) "has 128x256" true (contains "128x256" s)
 
 

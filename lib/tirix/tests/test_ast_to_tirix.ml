@@ -72,7 +72,7 @@ let ampere_with_mma () =
 let hopper_with_mma () =
   Kernel_ast.make
     ~name:"gemm_hopper_mma"
-    ~arch:Kernel_ast.SM90
+    ~arch:Kernel_ast.SM90a
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 64 }
     ~stages:4
@@ -87,7 +87,7 @@ let hopper_with_mma () =
 let blackwell_with_mma () =
   Kernel_ast.make
     ~name:"gemm_blackwell_mma"
-    ~arch:Kernel_ast.SM100
+    ~arch:Kernel_ast.SM100a
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 256; k = 64 }
     ~stages:4

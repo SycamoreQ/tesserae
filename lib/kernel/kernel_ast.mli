@@ -5,8 +5,8 @@
 (** Target architecture. *)
 type arch =
   | SM80   (** Ampere*)
-  | SM90   (** Hopper*)
-  | SM100  (** Blackwell *)
+  | SM90a   (** Hopper*)
+  | SM100a  (** Blackwell *)
 
 (** Element type tags for the DSL. *)
 type elem =

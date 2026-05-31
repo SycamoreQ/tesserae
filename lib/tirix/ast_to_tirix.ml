@@ -2,13 +2,30 @@ open Base
 open Tesserae_kernel
 open Tesserae_pipeline
 open Tesserae_core
+open Tirix
 
 
 type ctx = {
   arch : Kernel_ast.arch;
-  tensors     : (string * Tirix.packed_tensor) list;
+  tensors : (string * Tirix.packed_tensor) list;
   var_counter : int ref;
 }
+
+type loop_ctx = {
+  k_var : var option;
+  m_var : var option;
+  n_var : var option;
+  stage_var : var option;
+}
+
+let empty_loop_ctx = { k_var = None; m_var = None; n_var = None; stage_var = None }
+
+let _mk_tir_var name =
+  { Tirix.var_name = name
+  ; var_id = 0
+  ; var_type = Tirix.Scalar Tirix.S32
+  ; var_mutable = false
+  }
 
 type packed_space = Space : 'a Memspace.space -> packed_space
 type packed_elem = Elem : 'a Elemtype.t -> packed_elem
@@ -80,8 +97,8 @@ let infer_copy_kind (ctx : ctx)
   | "global", "shared" ->
     (match ctx.arch with
      | Kernel_ast.SM80  -> Tirix.CpAsync
-     | Kernel_ast.SM90  -> Tirix.TmaLoad
-     | Kernel_ast.SM100 -> Tirix.TmaMulticast)
+     | Kernel_ast.SM90a  -> Tirix.TmaLoad
+     | Kernel_ast.SM100a -> Tirix.TmaMulticast)
   | "shared", "register" -> Tirix.SmemToReg
   | "register", "shared" -> Tirix.RegToSmem
   | "register", _ -> Tirix.RegToSmem
@@ -91,8 +108,8 @@ let infer_copy_kind (ctx : ctx)
 let infer_mma_kind (ctx : ctx) : Tirix.mma_kind =
   match ctx.arch with
   | Kernel_ast.SM80 -> Tirix.Sm80Mma
-  | Kernel_ast.SM90 -> Tirix.Sm90Wgmma
-  | Kernel_ast.SM100 -> Tirix.Sm100Tcgen05
+  | Kernel_ast.SM90a -> Tirix.Sm90Wgmma
+  | Kernel_ast.SM100a -> Tirix.Sm100Tcgen05
 
 
 
@@ -146,7 +163,7 @@ let lower_params (ctx : ctx) (k : Kernel_ast.kernel) : Tirix.param list =
   let sw   = Swizzle.make 0 0 0 in
   List.map k.Kernel_ast.args ~f:(fun (name, elem, space) ->
     let is_tma = match ctx.arch, space with
-      | (Kernel_ast.SM90 | Kernel_ast.SM100), Kernel_ast.Global -> true
+      | (Kernel_ast.SM90a | Kernel_ast.SM100a), Kernel_ast.Global -> true
       | _ -> false
     in
     { Tirix.param_name = name
@@ -156,8 +173,8 @@ let lower_params (ctx : ctx) (k : Kernel_ast.kernel) : Tirix.param list =
 
 let lower_family = function
   | Kernel_ast.SM80 -> Kernel_desc.Ampere
-  | Kernel_ast.SM90 -> Kernel_desc.Hopper
-  | Kernel_ast.SM100 -> Kernel_desc.Blackwell
+  | Kernel_ast.SM90a -> Kernel_desc.Hopper
+  | Kernel_ast.SM100a -> Kernel_desc.Blackwell
 
 (* Collect all tensors referenced in the kernel body *)
 let rec collect_tensors (stmt : Kernel_ast.stmt) (acc : (string * Tirix.packed_tensor) list)
@@ -217,7 +234,7 @@ let rec collect_tensors (stmt : Kernel_ast.stmt) (acc : (string * Tirix.packed_t
   | Kernel_ast.Barrier _ -> acc
 
 
-let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
+let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
   match stmt with
   | Kernel_ast.Load (src_expr, dst_expr, mask_opt) ->
     let src  = lookup_tensor ctx src_expr in
@@ -230,6 +247,10 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
     ; dst_tensor = dst
     ; pred_expr = pred
     ; mbar_var = None
+    ; tma_coord_k = Option.map loop_ctx.k_var ~f:(fun v -> Tirix.Var v)
+    ; tma_coord_m = Option.map loop_ctx.m_var ~f:(fun v -> Tirix.Var v)
+    ; tma_coord_n = Option.map loop_ctx.n_var ~f:(fun v -> Tirix.Var v)
+    ; stage_var = loop_ctx.stage_var
     })
   | Kernel_ast.Store (src_expr, dst_expr, mask_opt) ->
     let src = lookup_tensor ctx src_expr in
@@ -242,6 +263,10 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
     ; dst_tensor = dst
     ; pred_expr = pred
     ; mbar_var = None
+    ; tma_coord_k = Option.map loop_ctx.k_var ~f:(fun v -> Tirix.Var v)
+    ; tma_coord_m = Option.map loop_ctx.m_var ~f:(fun v -> Tirix.Var v)
+    ; tma_coord_n = Option.map loop_ctx.n_var ~f:(fun v -> Tirix.Var v)
+    ; stage_var = loop_ctx.stage_var
     })
   | Kernel_ast.Mma (a_expr, b_expr, c_expr) ->
     let kind = infer_mma_kind ctx in
@@ -262,6 +287,13 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
     ; var_type = Tirix.Scalar Tirix.S32
     ; var_mutable = true
     } in
+    let new_loop_ctx = match var_name with
+      | "k" | "k_loop" -> { loop_ctx with k_var = Some loop_var }
+      | "m" | "row" | "block_m" -> { loop_ctx with m_var = Some loop_var }
+      | "n" | "col" | "block_n" -> { loop_ctx with n_var = Some loop_var }
+      | "stage" | "s" -> { loop_ctx with stage_var = Some loop_var }
+      | _ -> loop_ctx
+    in
     Tirix.SFor {
       var = loop_var
     ; start = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val)
@@ -269,13 +301,13 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
     ; step = Tirix.Const (Tirix.S32, 1l)
     ; dir = Tirix.Upto
     ; unroll = false
-    ; body = List.map body_stmts ~f:(convert_stmt ctx)
+    ; body = List.map body_stmts ~f:(convert_stmt ctx new_loop_ctx)
     }
   | Kernel_ast.Pipeline (desc, stmts) ->
     Tirix.SPipeline {
       stages = desc.Kernel_ast.stages
     ; prologue = []
-    ; mainloop = List.map stmts ~f:(convert_stmt ctx)
+    ; mainloop = List.map stmts ~f:(convert_stmt ctx loop_ctx)
     ; epilogue = []
     }
   | Kernel_ast.Barrier b ->
@@ -283,33 +315,32 @@ let rec convert_stmt (ctx : ctx) (stmt : Kernel_ast.stmt) : Tirix.stmt =
   | Kernel_ast.If (pred, thn, els) ->
     Tirix.SIf (
       lower_pred pred,
-      List.map thn ~f:(convert_stmt ctx),
-      List.map els ~f:(convert_stmt ctx))
+      List.map thn ~f:(convert_stmt ctx loop_ctx),
+      List.map els ~f:(convert_stmt ctx loop_ctx))
   | Kernel_ast.Seq stmts ->
-    Tirix.SSeq (List.map stmts ~f:(convert_stmt ctx))
+    Tirix.SSeq (List.map stmts ~f:(convert_stmt ctx loop_ctx))
 
 
 let lower (k : Kernel_ast.kernel) : Tirix.tirix =
-  (* First collect all tensors referenced in the kernel *)
   let tensors = collect_tensors k.Kernel_ast.body [] in
   let ctx = {
     arch = k.Kernel_ast.arch
-  ; tensors = tensors  (* Initialize ctx with collected tensors *)
+  ; tensors = tensors
   ; var_counter = ref 0
   } in
-  let body = convert_stmt ctx k.Kernel_ast.body in
+  let body = convert_stmt ctx empty_loop_ctx k.Kernel_ast.body in
   let cluster = match k.Kernel_ast.arch with
     | Kernel_ast.SM80 ->
       Cluster.make { Cluster.x=1; y=1; z=1 } 4
         [ (0, Cluster.Producer); (1, Cluster.Consumer)
         ; (2, Cluster.Epilogue); (3, Cluster.Epilogue) ]
-    | Kernel_ast.SM90 ->
+    | Kernel_ast.SM90a ->
       Cluster.make { Cluster.x=2; y=1; z=1 } 8
         [ (0, Cluster.Producer); (1, Cluster.Consumer)
         ; (2, Cluster.Consumer); (3, Cluster.Consumer)
         ; (4, Cluster.Consumer); (5, Cluster.Epilogue)
         ; (6, Cluster.Epilogue); (7, Cluster.Epilogue) ]
-    | Kernel_ast.SM100 ->
+    | Kernel_ast.SM100a ->
       Cluster.make { Cluster.x=2; y=1; z=1 } 6
         [ (0, Cluster.Producer); (1, Cluster.Consumer)
         ; (2, Cluster.Epilogue); (3, Cluster.Epilogue)

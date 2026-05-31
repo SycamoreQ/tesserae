@@ -86,11 +86,11 @@ let test_arch_sm80 () =
 
 let test_arch_sm90 () =
   Alcotest.(check string) "sm90a"
-    "sm_90a" (Nvrtc.arch_string Kernel_ast.SM90)
+    "sm_90a" (Nvrtc.arch_string Kernel_ast.SM90a)
 
 let test_arch_sm100 () =
   Alcotest.(check string) "sm100a"
-    "sm_100a" (Nvrtc.arch_string Kernel_ast.SM100)
+    "sm_100a" (Nvrtc.arch_string Kernel_ast.SM100a)
 
 let test_compile_kernel_ampere () =
   let src = ampere_source () in

@@ -7,13 +7,15 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
   let err msg = errors := msg :: !errors in
 
   let tensor_names =
-    let from_tensors =
-      List.map tir.tensors ~f:(fun (name, _) -> name) in
-    let from_params =
-      List.map tir.params ~f:(fun p -> p.param_name) in
-    Hashtbl.of_alist_exn (module String)
-      (List.map (from_tensors @ from_params) ~f:(fun n -> (n, ())))
-  in
+      let from_tensors =
+        List.map tir.tensors ~f:(fun (name, _) -> name) in
+      let from_params =
+        List.map tir.params ~f:(fun p -> p.param_name) in
+      let all = from_tensors @ from_params in
+      let tbl = Hashtbl.create (module String) in
+      List.iter all ~f:(fun n -> Hashtbl.set tbl ~key:n ~data:());
+      tbl
+    in
 
   let check_tensor_name name context =
     if not (Hashtbl.mem tensor_names name) then
@@ -53,7 +55,13 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
         Option.iter c.pred_expr ~f:(check_expr scope);
         Option.iter c.mbar_var  ~f:(fun v ->
           if not (Hashtbl.mem scope v.var_name) then
-            err (Printf.sprintf "undefined mbar '%s' in copy" v.var_name))
+            err (Printf.sprintf "undefined mbar '%s' in copy" v.var_name));
+        Option.iter c.tma_coord_k ~f:(check_expr scope);
+        Option.iter c.tma_coord_m ~f:(check_expr scope);
+        Option.iter c.tma_coord_n ~f:(check_expr scope);
+        Option.iter c.stage_var ~f:(fun v ->
+          if not (Hashtbl.mem scope v.var_name) then
+            err (Printf.sprintf "undefined stage variable '%s' in copy" v.var_name))
     | Mma m ->
         check_tensor_name (tensor_name m.tensor_a) "mma.a";
         check_tensor_name (tensor_name m.tensor_b) "mma.b";

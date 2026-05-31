@@ -139,6 +139,10 @@ type copy = {
   dst_tensor : packed_tensor;
   pred_expr  : bool expr option;
   mbar_var   : var option;
+  tma_coord_k : int32 expr option;
+  tma_coord_m : int32 expr option;
+  tma_coord_n : int32 expr option;
+  stage_var : var option;
 }
 
 (** {1 MMA} *)
