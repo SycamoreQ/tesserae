@@ -109,6 +109,7 @@ let pp_copy_kind = function
   | TmaMulticast -> "tma.multicast"
   | RegToSmem -> "reg -> smem"
   | SmemToReg -> "smem -> reg"
+  | SmemToGlobal -> "smem -> global"
 
 let pp_mma_kind = function
   | Sm80Mma -> "mma.sync (SM80)"

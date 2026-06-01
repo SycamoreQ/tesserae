@@ -131,7 +131,7 @@ type barrier =
 (** {1 Copy} *)
 
 type copy_kind =
-  | CpAsync | TmaLoad | TmaMulticast | RegToSmem | SmemToReg
+  | CpAsync | TmaLoad | TmaMulticast | RegToSmem | SmemToReg | SmemToGlobal
 
 type copy = {
   copy_kind  : copy_kind;

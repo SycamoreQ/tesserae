@@ -233,9 +233,47 @@ let emit_copy (c : copy) : string =
   | RegToSmem ->
     Printf.sprintf "cute::copy(%s, %s);"
       src.tensor_name dst.tensor_name
+
   | SmemToReg ->
     Printf.sprintf "cute::copy(%s, %s);"
       src.tensor_name dst.tensor_name
+
+  | SmemToGlobal ->
+    (* smem → global epilogue store for copy kernels.
+       Emit a simple coalesced loop using __half2 (128-bit) vectorised
+       stores so every warp issues 128-bit transactions.
+       dst.tensor_name is the name of the global pointer parameter (e.g. "C").
+       src.tensor_name is the smem array name (e.g. "smem_A").
+       We iterate over half2 pairs strided by blockDim.x so the kernel
+       works regardless of how many threads are launched. *)
+    let pred_guard = match c.pred_expr with
+      | None -> ""
+      | Some p -> Printf.sprintf "if (%s) " (emit_expr p)
+    in
+    Printf.sprintf
+      "%s{\n\
+      \  /* SmemToGlobal: %s -> %s */\n\
+      \  const int _tid     = (int)threadIdx.x;\n\
+      \  const int _nthreads = (int)blockDim.x;\n\
+      \  const int _n_half2  = (int)(sizeof(smem.%s) / sizeof(__half2));\n\
+      \  __half2* _smem_ptr = reinterpret_cast<__half2*>(&smem.%s[0]);\n\
+      \  __half2* _dst_ptr  = reinterpret_cast<__half2*>(const_cast<__half*>(%s)\n\
+      \                        + (blockIdx.x * %d + blockIdx.y * %d));\n\
+      \  for (int _i = _tid; _i < _n_half2; _i += _nthreads) {\n\
+      \    _dst_ptr[_i] = _smem_ptr[_i];\n\
+      \  }\n\
+      }"
+      pred_guard
+      src.tensor_name dst.tensor_name
+      src.tensor_name
+      src.tensor_name
+      dst.tensor_name
+      (* block tile offsets into the flat output — bm*bk and bn*bk
+         are the strides; the emitter already has k.bm / k.bn in scope
+         via the tirix record but emit_copy only receives the copy record.
+         Use the tensor layout size as the tile footprint: *)
+      (Layout.size src.tensor_layout)
+      (Layout.size src.tensor_layout)
 
 
 let emit_mma (m : mma_desc) : string =
@@ -581,14 +619,7 @@ let rec filter_builtin_vars (stmts : stmt list) : stmt list =
   List.filter_map stmts ~f:(function
     | SLet (v, _) | SLetMut (v, _) when
         String.equal v.var_name "warp_id" ||
-        String.equal v.var_name "lane_id" ||
-        String.equal v.var_name "full_mbar" ||
-        String.equal v.var_name "empty_mbar" ||
-        String.equal v.var_name "block_m" ||
-        String.equal v.var_name "block_n" ||
-        String.equal v.var_name "row" ||
-        String.equal v.var_name "col" ||
-        String.equal v.var_name "coord_n"   -> None
+        String.equal v.var_name "lane_id" -> None
     | SSeq ss ->
       let filtered = filter_builtin_vars ss in
       if List.is_empty filtered then None else Some (SSeq filtered)

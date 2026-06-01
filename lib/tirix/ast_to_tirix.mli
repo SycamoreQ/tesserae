@@ -7,6 +7,12 @@ type ctx = {
   arch : Kernel_ast.arch;
   tensors : (string * Tirix.packed_tensor) list;
   var_counter : int ref;
+  full_mbar : Tirix.var option;
+  empty_mbar : Tirix.var option;
+  pipeline_depth : int;
+  bm : int;
+  bk : int;
+  elem_bytes : int;
 }
 
 (** [lookup_tensor ctx expr] resolves a high-level frontend tensor expression

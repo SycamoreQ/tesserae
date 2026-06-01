@@ -132,6 +132,7 @@ type copy_kind =
   | TmaMulticast
   | RegToSmem
   | SmemToReg
+  | SmemToGlobal
 
 type copy = {
   copy_kind : copy_kind;
