@@ -67,40 +67,52 @@ let rec pp_expr : type a. a expr -> string = function
   | Builtin b -> pp_builtin b
 
   | Arith (op, l, r) -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_arith_op op) (pp_expr r)
-  | Cmp (op, l, r)     -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_cmp_op op) (pp_expr r)
-  | Logic (op, l, r)   -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_logic_op op) (pp_expr r)
+  | Cmp (op, l, r) -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_cmp_op op) (pp_expr r)
+  | Logic (op, l, r) -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_logic_op op) (pp_expr r)
   | Bitwise (op, l, r) -> Printf.sprintf "(%s %s %s)" (pp_expr l) (pp_bitwise_op op) (pp_expr r)
 
   | Unop (op, e) -> Printf.sprintf "(%s%s)" (pp_unop op) (pp_expr e)
-  | AddrConv (k, e)    -> Printf.sprintf "%s(%s)" (pp_addr_conv k) (pp_expr e)
+  | AddrConv (k, e) -> Printf.sprintf "%s(%s)" (pp_addr_conv k) (pp_expr e)
 
 let pp_packed_expr (Expr e) = pp_expr e
 
 let pp_barrier = function
   | CtaSync -> "__syncthreads();"
+
   | WarpSync -> "__syncwarp();"
+
   | MemFence -> "__threadfence();"
+
   | MbarInit { mbar; count } ->
     Printf.sprintf
       "asm volatile(\"mbarrier.init.shared.b64 [%%0], %d;\" :: \"r\"(&%s));"
       count mbar.var_name
+
   | MbarArriveExpect { mbar; bytes } ->
     Printf.sprintf
       "asm volatile(\"mbarrier.arrive.expect_tx.shared.b64 [%%0], %%1;\" :: \"r\"(&%s), \"r\"(%s));"
       mbar.var_name (pp_expr bytes)
+
   | MbarWaitParity { mbar; phase } ->
     Printf.sprintf
       "asm volatile(\"mbarrier.wait.parity.shared.b64 [%%0], %%1;\" :: \"r\"(&%s), \"r\"(%s));"
       mbar.var_name (pp_expr phase)
+
   | MbarArrive { mbar } ->
     Printf.sprintf
       "asm volatile(\"mbarrier.arrive.shared.b64 [%%0];\" :: \"r\"(&%s));"
       mbar.var_name
+
   | ClusterArrive -> "asm volatile(\"barrier.cluster.arrive.release.aligned;\");"
+
   | ClusterWait -> "asm volatile(\"barrier.cluster.wait.acquire.aligned;\");"
+
   | CpAsyncWaitAll -> "asm volatile(\"cp.async.wait_all;\");"
+
   | CpAsyncCommitGroup -> "asm volatile(\"cp.async.commit_group;\");"
+
   | Tcgen05Wait -> "asm volatile(\"tcgen05.wait::ld.sync.aligned;\");"
+
   | Tcgen05Fence -> "asm volatile(\"tcgen05.fence::after_thread_sync;\");"
 
 let pp_copy_kind = function

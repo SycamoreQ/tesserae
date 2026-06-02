@@ -271,10 +271,10 @@ let test_pp_op_copy_cp_async () =
   Alcotest.(check bool) "dst smem_A" true (contains "smem_A"  s)
 
 let test_pp_op_copy_tma () =
-  let src = make_tensor "A"      Elemtype.Float16 Memspace.Global in
+  let src = make_tensor "A" Elemtype.Float16 Memspace.Global in
   let dst = make_tensor "smem_A" Elemtype.Float16 Memspace.Shared in
   let s = Tirix_pp.pp_op (Copy {
-      copy_kind  = CpAsync
+      copy_kind  = TmaLoad          (* ← was CpAsync *)
     ; src_tensor = src; dst_tensor = dst
     ; pred_expr  = None; mbar_var  = None
     ; tma_coord_k = None; tma_coord_m = None
@@ -286,12 +286,12 @@ let test_pp_op_copy_multicast () =
   let src = make_tensor "A"      Elemtype.Float16 Memspace.Global in
   let dst = make_tensor "smem_A" Elemtype.Float16 Memspace.Shared in
   let s = Tirix_pp.pp_op (Copy {
-      copy_kind  = CpAsync
+      copy_kind  = TmaMulticast     (* ← was CpAsync *)
     ; src_tensor = src; dst_tensor = dst
     ; pred_expr  = None; mbar_var  = None
     ; tma_coord_k = None; tma_coord_m = None
     ; tma_coord_n = None; stage_var = None
-    })in
+    }) in
   Alcotest.(check bool) "multicast" true (contains "multicast" s)
 
 let test_pp_op_mma_sm80 () =
@@ -478,10 +478,6 @@ let test_pp_helper_ret_type () =
   } in
   let s = Tirix_pp.pp_helper h in
   Alcotest.(check bool) "float" true (contains "float" s)
-
-(* ------------------------------------------------------------------ *)
-(* pp_tirix                                                            *)
-(* ------------------------------------------------------------------ *)
 
 let test_pp_tirix_name () =
   let k = { (minimal_tirix ()) with name = "my_kernel" } in

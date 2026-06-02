@@ -9,7 +9,6 @@ def ignore_local_artifacts(path: Path) -> bool:
     return ".git" in parts or "_build" in parts or path.name == ".DS_Store"
 
 
-# 1. Define the Linux environment with CUDA, OCaml, and required packages
 tesserae_image = (
     modal.Image.from_registry("nvidia/cuda:13.0.0-devel-ubuntu22.04", add_python="3.11")
     .apt_install("ocaml", "opam", "git", "build-essential", "gcc-multilib")
@@ -50,13 +49,7 @@ def run_tesserae_tests():
 
     print("Build successful! Running test suite...")
 
-    # Step 2: Run the tests with forced unbuffered output
-    # Step 2: Run the tests wrapped in compute-sanitizer
-    # Run the tests directly to see if the XID 13 crash is gone
-    test_cmd = (
-        "eval $(opam env) && cd /workspace && "
-        "timeout 120s dune exec lib/runtime/tests/test_runtime.exe -- --verbose copy"
-    )
+    test_cmd = "eval $(opam env) && cd /workspace && timeout 120s dune test"
     test_result = subprocess.run(test_cmd, shell=True)
 
     if test_result.returncode == 0:

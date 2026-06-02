@@ -12,7 +12,6 @@ type ctx = {
   full_mbar : Tirix.var option;
   empty_mbar : Tirix.var option;
   pipeline_depth : int;
-  (* tile geometry kept for mbarrier byte computation *)
   bm : int;
   bk : int;
   elem_bytes : int;
@@ -77,6 +76,7 @@ let rec lookup_tensor (ctx : ctx) (expr : Kernel_ast.tensor_expr)
     (match List.find ctx.tensors ~f:(fun (n,_) -> String.equal n name) with
      | Some (_, t) -> t
      | None -> make_tensor name elem space flat sw)
+
   | Kernel_ast.Smem (name, elem, shape) ->
     let layout = Layout.make
       (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
@@ -85,7 +85,9 @@ let rec lookup_tensor (ctx : ctx) (expr : Kernel_ast.tensor_expr)
     (match List.find ctx.tensors ~f:(fun (n,_) -> String.equal n name) with
      | Some (_, t) -> t
      | None -> make_tensor name elem Kernel_ast.Shared layout sw)
+
   | Kernel_ast.Tile (inner, _)      -> lookup_tensor ctx inner
+
   | Kernel_ast.LocalTile (inner, _) -> lookup_tensor ctx inner
 
 let memspace_name (Tirix.Tensor t) = Memspace.name t.tensor_memspace
@@ -98,17 +100,22 @@ let infer_copy_kind (ctx : ctx)
      | Kernel_ast.SM80 -> Tirix.CpAsync
      | Kernel_ast.SM90a -> Tirix.TmaLoad
      | Kernel_ast.SM100a -> Tirix.TmaMulticast)
+
   | "shared", "global" -> Tirix.SmemToGlobal
+
   | "shared", "register" -> Tirix.SmemToReg
+
   | "register", "shared" -> Tirix.RegToSmem
+
   | "register", _  -> Tirix.RegToSmem
+
   | _ -> Tirix.CpAsync
 
 let infer_mma_kind (ctx : ctx) : Tirix.mma_kind =
   match ctx.arch with
-  | Kernel_ast.SM80    -> Tirix.Sm80Mma
-  | Kernel_ast.SM90a   -> Tirix.Sm90Wgmma
-  | Kernel_ast.SM100a  -> Tirix.Sm100Tcgen05
+  | Kernel_ast.SM80 -> Tirix.Sm80Mma
+  | Kernel_ast.SM90a -> Tirix.Sm90Wgmma
+  | Kernel_ast.SM100a -> Tirix.Sm100Tcgen05
 
 let lower_mask (m : Kernel_ast.mask) : bool Tirix.expr =
   let v = { Tirix.var_name = m.Kernel_ast.coord_var
@@ -146,20 +153,26 @@ let lower_pred (p : Kernel_ast.pred_expr) : bool Tirix.expr =
   match p with
   | Kernel_ast.WarpIs n ->
     Cmp (Eq, Tirix.Builtin Tirix.WarpId, Const (Tirix.S32, Int32.of_int_exn n))
+
   | Kernel_ast.WarpIn ns ->
     List.fold ns ~init:(Tirix.Const (Tirix.Bool, false))
       ~f:(fun acc n ->
         Logic (Or, acc,
           Cmp (Eq, Tirix.Builtin Tirix.WarpId,
                Tirix.Const (Tirix.S32, Int32.of_int_exn n))))
+
   | Kernel_ast.InBounds (var, bounds) ->
     lower_mask { Kernel_ast.coord_var = var; bounds }
+
   | Kernel_ast.Mbarrier _ -> Tirix.Const (Tirix.Bool, true)
 
 let rec is_tma_source name = function
   | Kernel_ast.Load (Arg (n, _, Global), Smem _, _) when String.equal n name -> true
+
   | Kernel_ast.For (_, _, _, body) -> List.exists body ~f:(is_tma_source name)
+
   | Kernel_ast.Seq ss -> List.exists ss ~f:(is_tma_source name)
+
   | _ -> false
 
 let lower_params (ctx : ctx) (k : Kernel_ast.kernel) : Tirix.param list =
@@ -195,35 +208,42 @@ let rec collect_tensors (stmt : Kernel_ast.stmt)
     let tensors = match src with
       | Kernel_ast.Arg (name, elem, space) ->
         add_unique name (make_tensor name elem space flat sw) tensors
+
       | Kernel_ast.Smem (name, elem, shape) ->
         let layout = Layout.make
           (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
           (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m]) in
         add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
+
       | _ -> tensors
     in
     let tensors = match dst with
       | Kernel_ast.Arg (name, elem, space) ->
         add_unique name (make_tensor name elem space flat sw) tensors
+
       | Kernel_ast.Smem (name, elem, shape) ->
         let layout = Layout.make
           (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
           (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m]) in
         add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
+
       | _ -> tensors
     in
     tensors
+
   | Kernel_ast.Mma (a, b, c) ->
     let collect_one expr acc = match expr with
       | Kernel_ast.Arg (name, elem, space)
         when not (List.exists acc ~f:(fun (n,_) -> String.equal n name)) ->
         (name, make_tensor name elem space flat sw) :: acc
+
       | Kernel_ast.Smem (name, elem, shape)
         when not (List.exists acc ~f:(fun (n,_) -> String.equal n name)) ->
         let layout = Layout.make
           (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
           (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m]) in
         (name, make_tensor name elem Kernel_ast.Shared layout sw) :: acc
+
       | _ -> acc
     in
     collect_one c (collect_one b (collect_one a acc))
@@ -231,26 +251,35 @@ let rec collect_tensors (stmt : Kernel_ast.stmt)
     List.fold body ~init:acc ~f:(fun acc s -> collect_tensors s acc)
   | Kernel_ast.Pipeline (_, stmts) ->
     List.fold stmts ~init:acc ~f:(fun acc s -> collect_tensors s acc)
+
   | Kernel_ast.If (_, thn, els) ->
     let acc = List.fold thn ~init:acc ~f:(fun acc s -> collect_tensors s acc) in
     List.fold els ~init:acc ~f:(fun acc s -> collect_tensors s acc)
+
   | Kernel_ast.Seq stmts ->
     List.fold stmts ~init:acc ~f:(fun acc s -> collect_tensors s acc)
+
   | Kernel_ast.Barrier _ -> acc
 
 let rec has_tma_load (arch : Kernel_ast.arch) (stmt : Kernel_ast.stmt) : bool =
   match arch with
   | Kernel_ast.SM80 -> false
+
   | Kernel_ast.SM90a | Kernel_ast.SM100a ->
     match stmt with
     | Kernel_ast.Load (Kernel_ast.Arg (_, _, Kernel_ast.Global),
                        Kernel_ast.Smem _, _) -> true
+
     | Kernel_ast.For (_, _, _, body) -> List.exists body ~f:(has_tma_load arch)
+
     | Kernel_ast.Pipeline (_, stmts) -> List.exists stmts ~f:(has_tma_load arch)
+
     | Kernel_ast.If (_, thn, els) ->
       List.exists thn ~f:(has_tma_load arch) ||
       List.exists els ~f:(has_tma_load arch)
+
     | Kernel_ast.Seq stmts -> List.exists stmts ~f:(has_tma_load arch)
+
     | _ -> false
 
 let make_mbar_tensors (depth : int) : (string * Tirix.packed_tensor) list =
@@ -294,6 +323,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       | Some mbar ->
         let bytes = match dst_expr with
           | Kernel_ast.Smem (_, _, shape) -> shape.Kernel_ast.m * shape.Kernel_ast.k * ctx.elem_bytes
+
           | _ -> ctx.bm * ctx.bk * ctx.elem_bytes
         in
         [ Tirix.SOp (Tirix.Barrier (Tirix.MbarArriveExpect {
@@ -408,25 +438,25 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     ; var_mutable     = true
     } in
     let new_loop_ctx = match var_name with
-      | "k" | "k_loop" | "k_tile"  -> { loop_ctx with k_var     = Some loop_var }
-      | "m" | "row"   | "block_m"  -> { loop_ctx with m_var     = Some loop_var }
-      | "n" | "col"   | "block_n"  -> { loop_ctx with n_var     = Some loop_var }
+      | "k" | "k_loop" | "k_tile"  -> { loop_ctx with k_var = Some loop_var }
+      | "m" | "row"   | "block_m"  -> { loop_ctx with m_var = Some loop_var }
+      | "n" | "col"   | "block_n"  -> { loop_ctx with n_var = Some loop_var }
       | "stage" | "s"              -> { loop_ctx with stage_var = Some loop_var }
       | _                          -> loop_ctx
     in
     Tirix.SFor {
-      var    = loop_var
-    ; start  = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val)
-    ; stop   = Tirix.Const (Tirix.S32, Int32.of_int_exn stop_val)
-    ; step   = Tirix.Const (Tirix.S32, 1l)
-    ; dir    = Tirix.Upto
+      var = loop_var
+    ; start = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val)
+    ; stop = Tirix.Const (Tirix.S32, Int32.of_int_exn stop_val)
+    ; step = Tirix.Const (Tirix.S32, 1l)
+    ; dir = Tirix.Upto
     ; unroll = false
-    ; body   = List.map body_stmts ~f:(convert_stmt ctx new_loop_ctx)
+    ; body = List.map body_stmts ~f:(convert_stmt ctx new_loop_ctx)
     }
 
   | Kernel_ast.Pipeline (desc, stmts) ->
     Tirix.SPipeline {
-      stages   = desc.Kernel_ast.stages
+      stages = desc.Kernel_ast.stages
     ; prologue = []
     ; mainloop = List.map stmts ~f:(convert_stmt ctx loop_ctx)
     ; epilogue = []

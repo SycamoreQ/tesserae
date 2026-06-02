@@ -179,7 +179,6 @@ let emit_copy (c : copy) : string =
           \"l\"((uint64_t)(uintptr_t)%s) : \"memory\");"
       pred dst.tensor_name src.tensor_name
 
-  (*temporary removal of barriers to isolate TMA*)
   | TmaLoad ->
     let coord_k = match c.tma_coord_k with
       | Some e -> emit_expr e
@@ -239,7 +238,7 @@ let emit_copy (c : copy) : string =
       src.tensor_name dst.tensor_name
 
   | SmemToGlobal ->
-    (* smem → global epilogue store for copy kernels.
+    (* smem -> global epilogue store for copy kernels.
        Emit a simple coalesced loop using __half2 (128-bit) vectorised
        stores so every warp issues 128-bit transactions.
        dst.tensor_name is the name of the global pointer parameter (e.g. "C").
@@ -360,7 +359,6 @@ let emit_mma (m : mma_desc) : string =
                  \  uint64_t desc_a = %s;\n\
                  \  uint64_t desc_b = %s;\n\
                  \  (void)desc_a; (void)desc_b; // Prevent unused variable warnings\n\
-                 \  /* --- WGMMA ISOLATION TEST ---\n\
                  \  asm volatile(\"wgmma.fence.sync.aligned;\");\n\
                  \  asm volatile(\n\
                  \    \"wgmma.mma_async.sync.aligned.%s.f32.%s.%s {%s}, %%%d, %%%d, %d, 1, 1, 0, 0;\"\n\
@@ -368,7 +366,6 @@ let emit_mma (m : mma_desc) : string =
                  \    : \"l\"(desc_a), \"l\"(desc_b));\n\
                  \  asm volatile(\"wgmma.commit_group.sync.aligned;\");\n\
                  \  asm volatile(\"wgmma.wait_group.sync.aligned 0;\");\n\
-                 \  ----------------------------- */\n\
                  }"
         desc_a_expr desc_b_expr
         mn_str at bt
@@ -644,8 +641,6 @@ let rec filter_non_warp (stmts : stmt list) : stmt list =
     | s -> Some s)
 
 
-(* Emit mbarrier init loop using __smem_base + offsetof for both
-   full_mbar and empty_mbar so addresses are stable. *)
 let emit_mbar_init_loop (k : tirix) : string =
   if not (tirix_is_tma k) then ""
   else

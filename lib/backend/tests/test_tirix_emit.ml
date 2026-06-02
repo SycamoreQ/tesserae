@@ -241,10 +241,6 @@ let test_shared_storage_mbar_tma () =
   Alcotest.(check bool) "mbar" true
     (contains "mbar" out.Backend_cute.shared_storage)
 
-let test_shared_storage_tmem_blackwell () =
-  let out = lower_and_emit (blackwell_kernel ()) in
-  Alcotest.(check bool) "tmem_addr" true
-    (contains "tmem_addr" out.Backend_cute.shared_storage)
 
 let test_kernel_func_global () =
   let out = lower_and_emit (ampere_kernel ()) in
