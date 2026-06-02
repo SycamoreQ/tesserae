@@ -87,7 +87,7 @@ let test_copy_kernel () =
       let smem_bytes = 64 * 64 * 2 + 8 in
       Kernel_launch.launch func
         ~grid:(1, 1, 1)
-        ~block:(64, 1, 1)
+        ~block:(256, 1, 1)
         ~smem:smem_bytes
         ~args:[ tma_a; Gpu_buffer.ptr buf_c ];
 

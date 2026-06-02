@@ -111,7 +111,7 @@ let emit_barrier = function
       Printf.sprintf {|
         asm volatile("mbarrier.init.shared::cta.b64 [%%0], %%1;"
             :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), "n"(%d) : "memory");
-        asm volatile("fence.mbarrier_init.release.cluster;");
+        asm volatile("fence.mbarrier_init.release.cta;");
       |} mbar.var_name count
 
   | MbarArriveExpect { mbar; bytes } ->
@@ -179,6 +179,7 @@ let emit_copy (c : copy) : string =
           \"l\"((uint64_t)(uintptr_t)%s) : \"memory\");"
       pred dst.tensor_name src.tensor_name
 
+  (*temporary removal of barriers to isolate TMA*)
   | TmaLoad ->
     let coord_k = match c.tma_coord_k with
       | Some e -> emit_expr e
@@ -670,7 +671,7 @@ let emit_mbar_init_loop (k : tirix) : string =
       \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\n\
       \        :: \"r\"((uint32_t)__cvta_generic_to_shared(\n\
       \            __smem_base + offsetof(SharedStorage, full_mbar) + s * sizeof(uint64_t))),\n\
-      \         \"n\"(2) : \"memory\");\n\
+      \         \"n\"(1) : \"memory\");\n\
       %s\
       \    }\n\
       \  }\n\
