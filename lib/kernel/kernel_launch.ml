@@ -12,19 +12,15 @@ type func = {
 
 external caml_cuinit : unit -> unit
   = "caml_cuinit"
+
 external caml_module_load_ptx : string -> nativeint
   = "caml_module_load_ptx"
+
 external caml_module_unload : nativeint -> unit
   = "caml_module_unload"
+
 external caml_get_function : nativeint -> string -> nativeint
   = "caml_get_function"
-
-external create_tma_descriptor :
-  nativeint -> int -> int -> int -> int -> nativeint
-  = "caml_create_tma_descriptor"
-
-external free_tma_descriptor : nativeint -> unit
-  = "caml_free_tma_descriptor"
 
 external caml_launch_kernel : nativeint
   -> int -> int -> int
@@ -36,8 +32,20 @@ external caml_launch_kernel : nativeint
 
 external caml_device_synchronize  : unit -> unit
   = "caml_device_synchronize"
-external caml_device_info         : unit -> string
+
+external caml_device_info : unit -> string
   = "caml_device_info"
+
+external caml_encode_tensor_map_2d :
+  nativeint -> nativeint -> int -> int -> int -> int -> int -> unit
+  = "caml_tensor_map_encode_2d_bytecode" "caml_tensor_map_encode_2d"
+
+external create_tma_descriptor :
+  nativeint -> int -> int -> int -> int -> nativeint
+  = "caml_create_tma_descriptor"
+
+external free_tma_descriptor : nativeint -> unit
+  = "caml_free_tma_descriptor"
 
 let init_called = ref false
 
@@ -75,12 +83,9 @@ let launch (f : func)
     ~(args  : nativeint list) : unit =
   let gx, gy, gz = grid in
   let bx, by, bz = block in
-
-  (* Pack arguments into a safe, contiguous off-heap Bigarray *)
   let len = List.length args in
   let arr = Array1.create nativeint c_layout len in
   List.iteri args ~f:(fun i v -> Array1.set arr i v);
-
   caml_launch_kernel !(f.handle)
     gx gy gz bx by bz smem arr
 
@@ -89,3 +94,17 @@ let synchronize () : unit =
 
 let device_info () : string =
   caml_device_info ()
+
+let encode_tensor_map_2d
+    ~(tmap_ptr   : nativeint)
+    ~(data_ptr   : nativeint)
+    ~(elem_bytes : int)
+    ~(global_rows : int)
+    ~(global_cols : int)
+    ~(tile_rows  : int)
+    ~(tile_cols  : int) : unit =
+  ensure_init ();
+  caml_encode_tensor_map_2d
+    tmap_ptr data_ptr elem_bytes
+    global_rows global_cols
+    tile_rows tile_cols

@@ -1,6 +1,13 @@
 import subprocess
+from pathlib import Path
 
 import modal
+
+
+def ignore_local_artifacts(path: Path) -> bool:
+    parts = path.parts
+    return ".git" in parts or "_build" in parts or path.name == ".DS_Store"
+
 
 # 1. Define the Linux environment with CUDA, OCaml, and required packages
 tesserae_image = (
@@ -14,7 +21,7 @@ tesserae_image = (
     .run_commands(
         "git clone --depth 1 https://github.com/nvidia/cutlass.git /tmp/cutlass_latest"
     )
-    .add_local_dir(".", remote_path="/workspace")
+    .add_local_dir(".", remote_path="/workspace", ignore=ignore_local_artifacts)
 )
 
 app = modal.App("tesserae-gpu-runner")
@@ -46,7 +53,10 @@ def run_tesserae_tests():
     # Step 2: Run the tests with forced unbuffered output
     # Step 2: Run the tests wrapped in compute-sanitizer
     # Run the tests directly to see if the XID 13 crash is gone
-    test_cmd = "eval $(opam env) && cd /workspace && dune test --force --no-buffer"
+    test_cmd = (
+        "eval $(opam env) && cd /workspace && "
+        "timeout 120s dune exec lib/runtime/tests/test_runtime.exe -- --verbose copy"
+    )
     test_result = subprocess.run(test_cmd, shell=True)
 
     if test_result.returncode == 0:

@@ -70,25 +70,33 @@ and mask = {
 }
 
 and barrier_kind =
+  | MbarInit of string * int
+  | MbarWaitParity of string * int
   | MbarFull   of string  (** wait on full mbarrier [var] *)
   | MbarEmpty  of string  (** wait on empty mbarrier [var] *)
   | ClusterSync           (** barrier.cluster.arrive + wait *)
   | ThreadSync            (** __syncthreads() *)
 
+
 and pred_expr =
   | WarpIs    of int           (** warp_id == n *)
   | WarpIn    of int list      (** warp_id in [n...] *)
   | InBounds  of string * int list  (** coordinate in bounds *)
+  | Mbarrier of string
 
-(** A complete kernel. *)
+type arg_dir = In | Out
+
+type tensor_arg = string * elem * space * arg_dir
+
+
 type kernel = {
-  name    : string;
-  arch    : arch;
-  elem    : elem;
-  tile    : tile_shape;
-  stages  : int;
-  args    : (string * elem * space) list;
-  body    : stmt;
+  name   : string;
+  arch   : arch;
+  elem   : elem;
+  tile   : tile_shape;
+  stages : int;
+  args   : tensor_arg list;
+  body   : stmt;
 }
 
 (** [kernel name arch elem tile stages args body] constructs a kernel. *)
@@ -98,13 +106,17 @@ val make :
   elem:elem ->
   tile:tile_shape ->
   stages:int ->
-  args:(string * elem * space) list ->
+  args:(string * elem * space * arg_dir) list ->
   body:stmt ->
   kernel
 
 
-(** [arg name elem space] declares a kernel argument. *)
-val arg : string -> elem -> space -> tensor_expr
+val tensor_arg : string -> elem -> space -> tensor_expr
+val arg        : string -> elem -> space -> tensor_expr
+
+val in_arg  : string -> elem -> string * elem * space * arg_dir
+val out_arg : string -> elem -> string * elem * space * arg_dir
+
 
 (** [smem name elem m k] declares a shared memory buffer. *)
 val smem : string -> elem -> int -> int -> tensor_expr

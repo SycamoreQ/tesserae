@@ -1,26 +1,32 @@
-(** Typed device memory buffer for float32 elements. *)
-type t
+open Base
 
-(** [alloc n] allocates n float32 elements on device, zeroed. *)
+type gpu_ptr_block
+type memory_kind = Device | Host
+
+type t = {
+  handle : gpu_ptr_block;
+  n_elems : int;
+  elem_bytes : int;
+  kind : memory_kind;
+}
+
 val alloc : int -> t
-
-(** [free t] frees device memory. Safe to call multiple times. *)
 val free : t -> unit
-
-(** [size t] returns number of elements. *)
 val size : t -> int
-
-(** [byte_size t] returns size in bytes. *)
 val byte_size : t -> int
-
-(** [ptr t] returns raw device pointer as nativeint. *)
 val ptr : t -> nativeint
 
-(** [of_host arr] copies host float array to device. *)
+val float_to_bytes : float array -> bytes
 val of_host : float array -> t
-
-(** [to_host t] copies device buffer to host float array. *)
 val to_host : t -> float array
-
-(** [copy_from_host t arr] copies host array into existing buffer. *)
 val copy_from_host : t -> float array -> unit
+
+val alloc_host : int -> t
+val copy_buffer : dst:t -> src:t -> bytes:int -> unit
+
+val alloc_f16 : int -> t
+val copy_from_host_f16 : t -> float array -> unit
+val to_host_f16 : t -> float array
+
+val float_to_f16_bits : float -> int
+val f16_bits_to_float : int -> float

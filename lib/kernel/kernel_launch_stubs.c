@@ -39,6 +39,66 @@ CAMLprim value caml_cuinit(value unit) {
 }
 
 
+CAMLprim value caml_tensor_map_encode_2d(
+    value v_tmap_ptr,
+    value v_data_ptr,
+    value v_elem_bytes,
+    value v_global_rows,   // full matrix rows (M)
+    value v_global_cols,   // full matrix cols (K)
+    value v_tile_rows,     // tile height (bm)
+    value v_tile_cols)     // tile width  (bk)
+{
+    CAMLparam5(v_tmap_ptr, v_data_ptr, v_elem_bytes, v_global_rows, v_global_cols);
+    CAMLxparam2(v_tile_rows, v_tile_cols);
+    CUtensorMap* tmap     = (CUtensorMap*)Nativeint_val(v_tmap_ptr);
+    void*        data     = (void*)Nativeint_val(v_data_ptr);
+    int elem_bytes        = Int_val(v_elem_bytes);
+    int global_rows       = Int_val(v_global_rows);
+    int global_cols       = Int_val(v_global_cols);
+    int tile_rows         = Int_val(v_tile_rows);
+    int tile_cols         = Int_val(v_tile_cols);
+
+    CUtensorMapDataType dtype =
+        (elem_bytes == 2) ? CU_TENSOR_MAP_DATA_TYPE_FLOAT16 :
+        (elem_bytes == 4) ? CU_TENSOR_MAP_DATA_TYPE_FLOAT32 :
+        (caml_failwith("unsupported elem size"), CU_TENSOR_MAP_DATA_TYPE_FLOAT16);
+
+    /* cuTensorMapEncodeTiled uses OUTERMOST-FIRST dimension ordering.
+       For a row-major [M][K] matrix:
+         globalDim[0] = M (rows, outermost)
+         globalDim[1] = K (cols, innermost / contiguous)
+       globalStrides[0] = stride between rows = K * elem_bytes
+       boxDim[0] = tile_rows, boxDim[1] = tile_cols */
+    cuuint64_t globalDim[2]     = { (cuuint64_t)global_rows,
+                                    (cuuint64_t)global_cols };
+    cuuint64_t globalStrides[1] = { (cuuint64_t)(global_cols * elem_bytes) };
+    cuuint32_t boxDim[2]        = { (cuuint32_t)tile_rows,
+                                    (cuuint32_t)tile_cols };
+    cuuint32_t elemStrides[2]   = { 1, 1 };
+
+    CUresult res = cuTensorMapEncodeTiled(
+        tmap,
+        dtype,
+        2,
+        data,
+        globalDim,
+        globalStrides,
+        boxDim,
+        elemStrides,
+        CU_TENSOR_MAP_INTERLEAVE_NONE,
+        CU_TENSOR_MAP_SWIZZLE_NONE,
+        CU_TENSOR_MAP_L2_PROMOTION_NONE,
+        CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+
+    if (res != CUDA_SUCCESS) {
+        const char* err;
+        cuGetErrorString(res, &err);
+        caml_failwith(err);
+    }
+    CAMLreturn(Val_unit);
+}
+
+
 CAMLprim value caml_module_load_ptx(value ptx) {
   CAMLparam1(ptx);
   CUmodule mod;
@@ -82,11 +142,11 @@ CAMLprim value caml_create_tma_descriptor(
   CUtensorMap host_tmap;
 
   void* global_ptr = (void*)(intnat) Nativeint_val(ptr_val);
-  uint64_t global_dim[2]    = { (uint64_t)Int_val(cols_val),
-                                 (uint64_t)Int_val(rows_val) };
+  uint64_t global_dim[2]    = { (uint64_t)Int_val(rows_val),
+                                 (uint64_t)Int_val(cols_val) };
   uint64_t global_stride[1] = { (uint64_t)Int_val(cols_val) * sizeof(uint16_t) };
-  uint32_t box_dim[2]       = { (uint32_t)Int_val(tile_cols_val),
-                                 (uint32_t)Int_val(tile_rows_val) };
+  uint32_t box_dim[2]       = { (uint32_t)Int_val(tile_rows_val),
+                                 (uint32_t)Int_val(tile_cols_val) };
   uint32_t elem_stride[2]   = { 1, 1 };
 
   CUresult rc = cuTensorMapEncodeTiled(
@@ -99,7 +159,7 @@ CAMLprim value caml_create_tma_descriptor(
     box_dim,
     elem_stride,
     CU_TENSOR_MAP_INTERLEAVE_NONE,
-    CU_TENSOR_MAP_SWIZZLE_128B,
+    CU_TENSOR_MAP_SWIZZLE_NONE,
     CU_TENSOR_MAP_L2_PROMOTION_NONE,
     CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
   );
@@ -185,4 +245,11 @@ CAMLprim value caml_device_info(value unit) {
     prop.major,
     prop.minor);
   CAMLreturn(caml_copy_string(buf));
+}
+
+CAMLprim value caml_tensor_map_encode_2d_bytecode(value* argv, int argc) {
+  (void)argc;
+  return caml_tensor_map_encode_2d(
+    argv[0], argv[1], argv[2], argv[3],
+    argv[4], argv[5], argv[6]);
 }

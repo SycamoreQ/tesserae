@@ -19,9 +19,9 @@ let ampere_empty () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
+~args:[ Kernel_ast.in_arg "A" Kernel_ast.F16
+      ; Kernel_ast.in_arg "B" Kernel_ast.F16
+      ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Seq [])
 
 let ampere_with_load () =
@@ -31,9 +31,9 @@ let ampere_with_load () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
+~args:[ Kernel_ast.in_arg "A" Kernel_ast.F16
+      ; Kernel_ast.in_arg "B" Kernel_ast.F16
+      ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Load (
       Kernel_ast.Arg ("A", Kernel_ast.F16, Kernel_ast.Global),
       Kernel_ast.Smem ("smem_A", Kernel_ast.F16, { Kernel_ast.m=128; n=0; k=32 }),
@@ -46,9 +46,9 @@ let ampere_with_store () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
+~args:[ Kernel_ast.in_arg "A" Kernel_ast.F16
+      ; Kernel_ast.in_arg "B" Kernel_ast.F16
+      ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Store (
       Kernel_ast.Smem ("smem_C", Kernel_ast.F32, { Kernel_ast.m=128; n=128; k=0 }),
       Kernel_ast.Arg  ("C",      Kernel_ast.F32, Kernel_ast.Global),
@@ -61,9 +61,9 @@ let ampere_with_mma () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
+~args:[ Kernel_ast.in_arg "A" Kernel_ast.F16
+      ; Kernel_ast.in_arg "B" Kernel_ast.F16
+      ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Mma (
       Kernel_ast.Smem ("smem_A", Kernel_ast.F16, { Kernel_ast.m=128; n=0; k=32 }),
       Kernel_ast.Smem ("smem_B", Kernel_ast.F16, { Kernel_ast.m=0;   n=128; k=32 }),
@@ -76,9 +76,9 @@ let hopper_with_mma () =
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 64 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32,  Kernel_ast.Global) ]
+    ~args:[ Kernel_ast.in_arg "A" Kernel_ast.BF16
+          ; Kernel_ast.in_arg "B" Kernel_ast.BF16
+          ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Mma (
       Kernel_ast.Smem ("smem_A", Kernel_ast.BF16, { Kernel_ast.m=128; n=0; k=64 }),
       Kernel_ast.Smem ("smem_B", Kernel_ast.BF16, { Kernel_ast.m=0; n=128; k=64 }),
@@ -91,9 +91,9 @@ let blackwell_with_mma () =
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 256; k = 64 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32,  Kernel_ast.Global) ]
+    ~args:[ Kernel_ast.in_arg "A" Kernel_ast.BF16
+          ; Kernel_ast.in_arg "B" Kernel_ast.BF16
+          ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Mma (
       Kernel_ast.Smem ("smem_A", Kernel_ast.BF16, { Kernel_ast.m=128; n=0; k=64 }),
       Kernel_ast.Smem ("smem_B", Kernel_ast.BF16, { Kernel_ast.m=0; n=256; k=64 }),
@@ -106,7 +106,7 @@ let ampere_with_for () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global) ]
+    ~args:[(Kernel_ast.in_arg "A" Kernel_ast.F16)]
     ~body:(Kernel_ast.For ("k", 0, 8, [Kernel_ast.Seq []]))
 
 let ampere_with_pipeline () =
@@ -116,7 +116,7 @@ let ampere_with_pipeline () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global) ]
+    ~args:[(Kernel_ast.in_arg "A" Kernel_ast.F16)]
     ~body:(Kernel_ast.Pipeline (
       { Kernel_ast.stages = 4; k_iters = "K" },
       [ Kernel_ast.Seq [] ]))
@@ -187,8 +187,8 @@ let ampere_with_mask () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.F16, Kernel_ast.Global) ]
+    ~args:[Kernel_ast.in_arg "A" Kernel_ast.F16
+          ; Kernel_ast.in_arg "B" Kernel_ast.F16]
     ~body:(Kernel_ast.Load (
       Kernel_ast.Arg ("A", Kernel_ast.F16, Kernel_ast.Global),
       Kernel_ast.Smem ("smem_A", Kernel_ast.F16, { Kernel_ast.m=128; n=0; k=32 }),

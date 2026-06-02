@@ -55,6 +55,13 @@ let test_free_idempotent () =
   (* should not crash *)
   Alcotest.(check bool) "ok" true true
 
+let test_host_free_idempotent () =
+  let buf = Gpu_buffer.alloc_host 32 in
+  Gpu_buffer.free buf;
+  (* pinned host buffers must use cudaFreeHost, not cudaFree *)
+  Gpu_buffer.free buf;
+  Alcotest.(check bool) "ok" true true
+
 let () =
   Alcotest.run "Gpu_buffer" [
     "alloc",  [ Alcotest.test_case "size"      `Quick test_alloc_size
@@ -62,5 +69,6 @@ let () =
               ; Alcotest.test_case "zero"      `Quick test_zero_fill ];
     "copy",   [ Alcotest.test_case "roundtrip" `Quick test_of_host_roundtrip
               ; Alcotest.test_case "ptr"       `Quick test_ptr_nonnull ];
-    "free",   [ Alcotest.test_case "idempotent"`Quick test_free_idempotent ];
+    "free",   [ Alcotest.test_case "idempotent"`Quick test_free_idempotent
+              ; Alcotest.test_case "host idempotent"`Quick test_host_free_idempotent ];
   ]

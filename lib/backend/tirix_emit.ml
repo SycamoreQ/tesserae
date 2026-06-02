@@ -108,38 +108,37 @@ let emit_barrier = function
   | MemFence -> "__threadfence();"
 
   | MbarInit { mbar; count } ->
-      Printf.sprintf
-        "asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\" \
-         :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), \
-            \"n\"(%d) : \"memory\");"
-        mbar.var_name count
+      Printf.sprintf {|
+        asm volatile("mbarrier.init.shared::cta.b64 [%%0], %%1;"
+            :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), "n"(%d) : "memory");
+        asm volatile("fence.mbarrier_init.release.cluster;");
+      |} mbar.var_name count
 
   | MbarArriveExpect { mbar; bytes } ->
-        Printf.sprintf
-          "if (lane_id == 0) { \
-             asm volatile(\"mbarrier.arrive.expect_tx.shared.b64 _ , [%%0], %%1;\" \
-             :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), \
-                \"r\"((uint32_t)(%s)) : \"memory\"); \
-           }"
-          mbar.var_name (emit_expr bytes)
+      Printf.sprintf {|
+        if (threadIdx.x == 0) {
+            asm volatile("mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 _, [%%0], %%1;"
+                :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), "r"(%s) : "memory");
+        }
+      |} mbar.var_name (emit_expr bytes)
 
   | MbarWaitParity { mbar; phase } ->
-      Printf.sprintf
-        {ptx|asm volatile(
-    "{\n\t"
-    "  .reg .pred p;\n\t"
-    "  LOOP_START:\n\t"
-    "  mbarrier.try_wait.parity.shared.b64 p, [%%0], %%1;\n\t"
-    "  @!p bra LOOP_START;\n\t"
-    "}"
-    :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))),
-       "r"(%s) : "memory"
-  );|ptx}
-        mbar.var_name (emit_expr phase)
+      Printf.sprintf {|
+        asm volatile(
+          "{"
+          "  .reg .pred p;"
+          "  LOOP_START:"
+          "  mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 p, [%%0], %%1, 0x989680;"
+          "  @!p bra LOOP_START;"
+          "}"
+          :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))),
+             "r"((uint32_t)(%s))
+          : "memory");
+      |} mbar.var_name (emit_expr phase)
 
   | MbarArrive { mbar } ->
         Printf.sprintf
-          "if (lane_id == 0) { \
+          "if (threadIdx.x == 0) { \
              asm volatile(\"mbarrier.arrive.shared.b64 _ , [%%0];\" \
              :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))) \
                 : \"memory\"); \
@@ -190,13 +189,13 @@ let emit_copy (c : copy) : string =
       | None -> "0"
     in
     let stage_off = match c.stage_var with
-      | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s) / 4))" v.var_name dst.tensor_name
+      | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s)))" v.var_name dst.tensor_name
       | None -> ""
     in
     let mbar_s = match c.mbar_var with
       | None -> "nullptr"
       | Some v ->
-        Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s))" v.var_name
+        Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))" v.var_name
     in
     Printf.sprintf
       "%stma_2d_gmem2smem(__smem_base + offsetof(SharedStorage, %s)%s, \
@@ -217,13 +216,13 @@ let emit_copy (c : copy) : string =
       | None -> "0"
     in
     let stage_off = match c.stage_var with
-      | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s) / 4))" v.var_name dst.tensor_name
+      | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s)))" v.var_name dst.tensor_name
       | None -> ""
     in
     let mbar_s = match c.mbar_var with
       | None -> "nullptr"
       | Some v ->
-        Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s))" v.var_name
+        Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))" v.var_name
     in
     Printf.sprintf
       "%stma_2d_gmem2smem_multicast(__smem_base + offsetof(SharedStorage, %s)%s, \
@@ -347,12 +346,12 @@ let emit_mma (m : mma_desc) : string =
          rather than folding away the conversion on a .shared symbol. *)
          let desc_a_expr =
                  Printf.sprintf
-                   "make_wgmma_desc((uint32_t)(offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s) / 4))), %sULL)"
+                   "make_wgmma_desc((uint32_t)(offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s)))), %sULL)"
                    a.tensor_name a.tensor_name or_const
                in
         let desc_b_expr =
           Printf.sprintf
-            "make_wgmma_desc((uint32_t)(offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s) / 4))), %sULL)"
+            "make_wgmma_desc((uint32_t)(offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s)))), %sULL)"
             b.tensor_name b.tensor_name or_const
         in
       Printf.sprintf
@@ -563,18 +562,17 @@ let emit_shared_storage (k : tirix) : string =
   in
   let mbar_decls =
     if tirix_is_tma k then
-      [ Printf.sprintf "  __align__(8) uint64_t full_mbar[%d];" k.pipeline_depth
-      ; Printf.sprintf "  __align__(8) uint64_t empty_mbar[%d];" k.pipeline_depth ]
+      let has_empty = List.exists k.tensors
+        ~f:(fun (n, _) -> String.equal n "empty_mbar") in
+      let full = [Printf.sprintf "  __align__(8) uint64_t full_mbar[%d];" k.pipeline_depth] in
+      let empty = if has_empty then
+        [Printf.sprintf "  __align__(8) uint64_t empty_mbar[%d];" k.pipeline_depth]
+        else [] in
+      full @ empty
     else []
   in
-  let tmem_decl =
-    match k.family with
-    | Kernel_desc.Blackwell -> ["  uint32_t tmem_addr[1];"]
-    | _ -> []
-  in
-  let all = tensor_decls @ mbar_decls @ tmem_decl in
-  Printf.sprintf "struct SharedStorage {\n%s\n};"
-    (String.concat ~sep:"\n" all)
+  let all = tensor_decls @ mbar_decls in
+  Printf.sprintf "struct SharedStorage {\n%s\n};" (String.concat ~sep:"\n" all)
 
 let emit_helper (h : helper_func) : string =
   let builtin_helpers = ["tma_2d_gmem2smem"; "tma_2d_gmem2smem_multicast"; "make_smem_desc_raw"; "make_smem_desc"] in
@@ -601,9 +599,14 @@ let emit_params (k : tirix) : string =
         Printf.sprintf "int %s" p.param_name
       | _ ->
         if p.param_is_tma then
-          Printf.sprintf "const CUtensorMap* %s_tmap" p.param_name
+          (* __grid_constant__ after * places the descriptor in .param space.
+             cp.async.bulk.tensor operand [tmap, {x,y}] requires this.
+             Qualifier order matters: "const CUtensorMap* __grid_constant__"
+             — NVRTC requires __grid_constant__ to annotate the pointer param,
+             not the pointee type. *)
+             Printf.sprintf "const CUtensorMap* %s_tmap" p.param_name
         else
-          Printf.sprintf "const %s* %s" elem_t p.param_name))
+          Printf.sprintf "%s* %s" elem_t p.param_name))
 
 let rec collect_warp_groups (stmts : stmt list) : (Cluster.warp_role * stmt list) list =
   List.concat_map stmts ~f:(function
@@ -646,11 +649,20 @@ let emit_mbar_init_loop (k : tirix) : string =
   if not (tirix_is_tma k) then ""
   else
     let depth = k.pipeline_depth in
-    (* Count how many consumer warps exist in the cluster configuration *)
-    let consumer_count = List.count k.cluster.Cluster.warp_roles ~f:(fun (_, role) ->
-      Poly.(role = Cluster.Consumer))
-    in
+    let has_empty = List.exists k.tensors
+      ~f:(fun (n, _) -> String.equal n "empty_mbar") in
+    let consumer_count = List.count k.cluster.Cluster.warp_roles
+      ~f:(fun (_, role) -> Poly.(role = Cluster.Consumer)) in
     let empty_count = if consumer_count = 0 then 1 else consumer_count in
+    let empty_init = if has_empty then
+      Printf.sprintf
+        "      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\n\
+        \        :: \"r\"((uint32_t)__cvta_generic_to_shared(\n\
+        \            __smem_base + offsetof(SharedStorage, empty_mbar) + s * sizeof(uint64_t))),\n\
+        \         \"n\"(%d) : \"memory\");\n"
+        empty_count
+      else ""
+    in
     Printf.sprintf
       "  if (warp_id == 0 && lane_id == 0) {\n\
       \    #pragma unroll\n\
@@ -658,15 +670,12 @@ let emit_mbar_init_loop (k : tirix) : string =
       \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\n\
       \        :: \"r\"((uint32_t)__cvta_generic_to_shared(\n\
       \            __smem_base + offsetof(SharedStorage, full_mbar) + s * sizeof(uint64_t))),\n\
-      \         \"n\"(1) : \"memory\");\n\
-      \      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\n\
-      \        :: \"r\"((uint32_t)__cvta_generic_to_shared(\n\
-      \            __smem_base + offsetof(SharedStorage, empty_mbar) + s * sizeof(uint64_t))),\n\
-      \         \"n\"(%d) : \"memory\");\n\
+      \         \"n\"(2) : \"memory\");\n\
+      %s\
       \    }\n\
       \  }\n\
       \  __syncthreads();"
-      depth empty_count
+      depth empty_init
 
 
 let emit_kernel_func (k : tirix) : string =
@@ -703,20 +712,23 @@ let emit_kernel_func (k : tirix) : string =
       String.concat ~sep:" else " warp_cases
   in
   let tiled_mma_s = emit_tiled_mma_decl k in
+  let stage_decl =
+    if tirix_is_tma k then "int stage = 0;\n" else ""
+  in
   let mbar_init_s = emit_mbar_init_loop k in
 
-  Printf.sprintf
-    "extern \"C\" %s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
-    \  extern __shared__ char smem_buf[];\n\
-    \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
-    \  char* __smem_base = smem_buf;\n\
-    \  (void)smem;\n\
-    \  const int warp_id = threadIdx.x / 32;\n\
-    \  const int lane_id = threadIdx.x %% 32;\n\
-    \  (void)lane_id;\n\
-     %s\n%s\n%s\n%s\n}\n"
-    cluster_attr n_threads k.name (emit_params k)
-    tiled_mma_s mbar_init_s pre_s warp_dispatch
+    Printf.sprintf
+        "extern \"C\" %s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
+        \  extern __shared__ char smem_buf[];\n\
+        \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
+        \  char* __smem_base = smem_buf;\n\
+        \  (void)smem;\n\
+        \  const int warp_id = threadIdx.x / 32;\n\
+        \  const int lane_id = threadIdx.x %% 32;\n\
+        \  (void)lane_id;\n\
+         %s%s\n%s\n%s\n%s\n}\n"
+        cluster_attr n_threads k.name (emit_params k)
+        tiled_mma_s stage_decl mbar_init_s pre_s warp_dispatch
 
 
 let emit_host_launcher_params (k : tirix) : string =
@@ -729,7 +741,7 @@ let emit_host_launcher_params (k : tirix) : string =
         Printf.sprintf "int %s" p.param_name
       | _ ->
         if p.param_is_tma then
-          Printf.sprintf "CUtensorMap* %s_tmap" p.param_name
+          Printf.sprintf "const CUtensorMap* %s_tmap" p.param_name
         else
           Printf.sprintf "const %s* %s" elem_t p.param_name))
 
@@ -743,6 +755,14 @@ let emit_host_launcher (k : tirix) : string =
       if p.param_is_tma then Printf.sprintf "%s_tmap" p.param_name
       else p.param_name))
   in
+  let has_m = List.exists k.params ~f:(fun p -> String.equal p.param_name "M") in
+  let has_n = List.exists k.params ~f:(fun p -> String.equal p.param_name "N") in
+  let grid_x = if has_m
+    then Printf.sprintf "(M + %d - 1) / %d" k.bm k.bm
+    else "1" in
+  let grid_y = if has_n
+    then Printf.sprintf "(N + %d - 1) / %d" k.bn k.bn
+    else "1" in
   let launch =
     if is_blackwell then
       Printf.sprintf
@@ -768,14 +788,16 @@ let emit_host_launcher (k : tirix) : string =
         k.name k.smem_bytes kernel_args
   in
   Printf.sprintf
-    "void launch_%s(\n  %s\n) {\n\
-    \  dim3 grid((M + %d - 1) / %d, (N + %d - 1) / %d, 1);\n\
+    "#ifndef __CUDACC_RTC__\n\
+     void launch_%s(\n  %s\n) {\n\
+    \  dim3 grid(%s, %s, 1);\n\
     \  dim3 block(%d, 1, 1);\n\
     \  (void)block;\n\
      %s\n\
-     }\n"
+     }\n\
+     #endif\n"
     k.name (emit_host_launcher_params k)
-    k.bm k.bm k.bn k.bn
+    grid_x grid_y
     (Cluster.thread_count k.cluster) launch
 
 
@@ -826,9 +848,9 @@ let emit_includes (k : tirix) : string =
     "// TMA load helper";
     "__device__ inline void tma_2d_gmem2smem(";
     "    void* smem, const CUtensorMap* tmap, int x, int y, uint64_t* mbar) {";
-    "     if (threadIdx.x % 32 == 0) {";
+    "     if (threadIdx.x == 0) {";
     "       asm volatile(";
-    "         \"cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes\"";
+    "         \"cp.async.bulk.tensor.2d.shared::cta.global.mbarrier::complete_tx::bytes\"";  (* this depends on the cluster_dims being (1 , 1 ,1) or (2 , 1 , 1)*)
     "         \" [%0], [%1, {%2, %3}], [%4];\"";
     "         :: \"r\"((uint32_t)__cvta_generic_to_shared(smem)), \"l\"(tmap),";
     "         \"r\"(x), \"r\"(y), \"r\"((uint32_t)__cvta_generic_to_shared(mbar))";
@@ -840,7 +862,7 @@ let emit_includes (k : tirix) : string =
     "__device__ inline void tma_2d_gmem2smem_multicast(";
     "    void* smem, const CUtensorMap* tmap, int x, int y,";
     "    uint64_t* mbar, uint16_t cta_mask) {";
-    "    if (threadIdx.x % 32 == 0) {";
+    "    if (threadIdx.x == 0) {";
     "       asm volatile(";
     "       \"cp.async.bulk.tensor.2d.shared::cluster.global\"";
     "       \".mbarrier::complete_tx::bytes.multicast::cluster\"";

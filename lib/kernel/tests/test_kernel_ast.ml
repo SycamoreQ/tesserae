@@ -1,9 +1,9 @@
 open Tesserae_kernel
 
 let gemm_body () =
-  let a  = Kernel_ast.arg "A" Kernel_ast.F16  Kernel_ast.Global in
-  let b  = Kernel_ast.arg "B" Kernel_ast.F16  Kernel_ast.Global in
-  let c  = Kernel_ast.arg "C" Kernel_ast.F32  Kernel_ast.Global in
+  let a  = Kernel_ast.tensor_arg "A" Kernel_ast.F16 Kernel_ast.Global in
+  let b  = Kernel_ast.tensor_arg "B" Kernel_ast.F16  Kernel_ast.Global in
+  let c  = Kernel_ast.tensor_arg "C" Kernel_ast.F32  Kernel_ast.Global in
   let sa = Kernel_ast.smem "smem_A" Kernel_ast.F16 128 64 in
   let sb  = Kernel_ast.smem "smem_B" Kernel_ast.F16 256 64 in
   Kernel_ast.Seq [
@@ -30,9 +30,9 @@ let ampere_gemm () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
+    ~args:[ Kernel_ast.in_arg "A" Kernel_ast.F16
+          ; Kernel_ast.in_arg "B" Kernel_ast.F16
+          ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(gemm_body ())
 
 let blackwell_gemm () =
@@ -42,9 +42,9 @@ let blackwell_gemm () =
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 256; k = 64 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32,  Kernel_ast.Global) ]
+    ~args:[ Kernel_ast.in_arg "A" Kernel_ast.BF16
+          ; Kernel_ast.in_arg "B" Kernel_ast.BF16
+          ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(gemm_body ())
 
 let test_make_name () =
@@ -79,22 +79,22 @@ let test_smem () =
 
 
 let test_load_stmt () =
-  let a  = Kernel_ast.arg "A" Kernel_ast.F16 Kernel_ast.Global in
+  let a  = Kernel_ast.tensor_arg "A" Kernel_ast.F16 Kernel_ast.Global in
   let sa = Kernel_ast.smem "smem_A" Kernel_ast.F16 128 64 in
   let s  = Kernel_ast.load ~src:a ~dst:sa () in
   Alcotest.(check bool) "is load" true
     (match s with Kernel_ast.Load _ -> true | _ -> false)
 
 let test_store_stmt () =
-  let c = Kernel_ast.arg "C" Kernel_ast.F32 Kernel_ast.Global in
+  let c = Kernel_ast.tensor_arg "C" Kernel_ast.F32 Kernel_ast.Global in
   let s = Kernel_ast.store ~src:c ~dst:c () in
   Alcotest.(check bool) "is store" true
     (match s with Kernel_ast.Store _ -> true | _ -> false)
 
 let test_mma_stmt () =
-  let a = Kernel_ast.arg "A" Kernel_ast.F16 Kernel_ast.Global in
-  let b = Kernel_ast.arg "B" Kernel_ast.F16 Kernel_ast.Global in
-  let c = Kernel_ast.arg "C" Kernel_ast.F32 Kernel_ast.Global in
+  let a = Kernel_ast.tensor_arg "A" Kernel_ast.F16 Kernel_ast.Global in
+  let b = Kernel_ast.tensor_arg "B" Kernel_ast.F16 Kernel_ast.Global in
+  let c = Kernel_ast.tensor_arg "C" Kernel_ast.F32 Kernel_ast.Global in
   let s = Kernel_ast.mma a b c in
   Alcotest.(check bool) "is mma" true
     (match s with Kernel_ast.Mma _ -> true | _ -> false)
@@ -144,8 +144,10 @@ let test_args_count () =
 
 let test_args_names () =
   let names = List.map
-    (fun arg -> let (n, _, _) = arg in n)
+    (fun (n, _, _, _) -> n)
     (ampere_gemm ()).Kernel_ast.args in
+
+  (* If you are using standard OCaml List syntax: *)
   Alcotest.(check bool) "has A" true (List.mem "A" names);
   Alcotest.(check bool) "has B" true (List.mem "B" names);
   Alcotest.(check bool) "has C" true (List.mem "C" names)

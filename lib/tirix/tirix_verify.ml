@@ -24,6 +24,11 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
 
   let tensor_name (Tensor t) = t.tensor_name in
 
+  let check_mbar_name scope name context =
+    if not (Hashtbl.mem scope name || Hashtbl.mem tensor_names name) then
+      err (Printf.sprintf "undefined mbar '%s' in %s" name context)
+  in
+
   let rec check_expr : type a. (string, unit) Hashtbl.t -> a expr -> unit =
     fun scope e ->
     match e with
@@ -53,9 +58,8 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
         check_tensor_name (tensor_name c.src_tensor) "copy.src";
         check_tensor_name (tensor_name c.dst_tensor) "copy.dst";
         Option.iter c.pred_expr ~f:(check_expr scope);
-        Option.iter c.mbar_var  ~f:(fun v ->
-          if not (Hashtbl.mem scope v.var_name) then
-            err (Printf.sprintf "undefined mbar '%s' in copy" v.var_name));
+        Option.iter c.mbar_var ~f:(fun v ->
+          check_mbar_name scope v.var_name "copy");
         Option.iter c.tma_coord_k ~f:(check_expr scope);
         Option.iter c.tma_coord_m ~f:(check_expr scope);
         Option.iter c.tma_coord_n ~f:(check_expr scope);
@@ -68,22 +72,18 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
         check_tensor_name (tensor_name m.tensor_c) "mma.c"
 
     | Barrier (MbarInit { mbar; _ }) ->
-        if not (Hashtbl.mem scope mbar.var_name) then
-          err (Printf.sprintf "undefined mbar '%s' in MbarInit" mbar.var_name)
+        check_mbar_name scope mbar.var_name "MbarInit"
 
     | Barrier (MbarArriveExpect { mbar; bytes }) ->
-        if not (Hashtbl.mem scope mbar.var_name) then
-          err (Printf.sprintf "undefined mbar '%s' in MbarArriveExpect" mbar.var_name);
+        check_mbar_name scope mbar.var_name "MbarArriveExpect";
         check_expr scope bytes
 
     | Barrier (MbarWaitParity { mbar; phase }) ->
-        if not (Hashtbl.mem scope mbar.var_name) then
-          err (Printf.sprintf "undefined mbar '%s' in MbarWaitParity" mbar.var_name);
+        check_mbar_name scope mbar.var_name "MbarWaitParity";
         check_expr scope phase
 
     | Barrier (MbarArrive { mbar }) ->
-        if not (Hashtbl.mem scope mbar.var_name) then
-          err (Printf.sprintf "undefined mbar '%s' in MbarArrive" mbar.var_name)
+        check_mbar_name scope mbar.var_name "MbarArrive"
 
     | Barrier _ -> ()
 
@@ -102,8 +102,7 @@ let verify (tir : Tirix.tirix) : (unit, string list) Result.t =
         check_expr scope src_addr
 
     | TmemCommit { mbar_var; _ } ->
-        if not (Hashtbl.mem scope mbar_var.var_name) then
-          err (Printf.sprintf "undefined mbar '%s' in TmemCommit" mbar_var.var_name)
+        check_mbar_name scope mbar_var.var_name "TmemCommit"
 
     | SmemDescInit { desc_var; ptr_expr; _ } ->
         if not (Hashtbl.mem scope desc_var.var_name) then

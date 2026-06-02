@@ -18,17 +18,45 @@ type space =
   | Register
   | TensorMem
 
+type arg_dir = In | Out
+
+type tensor_arg = string * elem * space * arg_dir
+
 type tensor_expr =
-  | Arg       of string * elem * space
-  | Tile      of tensor_expr * tile_shape
+  | Arg of string * elem * space
+  | Tile of tensor_expr * tile_shape
   | LocalTile of tensor_expr * tile_shape
-  | Smem      of string * elem * tile_shape
+  | Smem of string * elem * tile_shape
 
 and tile_shape = {
   m : int;
   n : int;
   k : int;
 }
+
+type pipeline_desc = {
+  stages  : int;
+  k_iters : string;
+}
+
+type mask = {
+  coord_var : string;
+  bounds    : int list;
+}
+
+type barrier_kind =
+  | MbarInit of string * int      (* mbarrier name, transaction count *)
+  | MbarWaitParity of string * int (* mbarrier name, parity (0 or 1) *)
+  | MbarFull of string
+  | MbarEmpty of string
+  | ClusterSync
+  | ThreadSync
+
+type pred_expr =
+  | WarpIs of int
+  | WarpIn of int list
+  | InBounds of string * int list
+  | Mbarrier of string
 
 type stmt =
   | Load     of tensor_expr * tensor_expr * mask option
@@ -40,59 +68,39 @@ type stmt =
   | If       of pred_expr * stmt list * stmt list
   | Seq      of stmt list
 
-and pipeline_desc = {
-  stages  : int;
-  k_iters : string;
-}
-
-and mask = {
-  coord_var : string;
-  bounds    : int list;
-}
-
-and barrier_kind =
-  | MbarFull   of string
-  | MbarEmpty  of string
-  | ClusterSync
-  | ThreadSync
-
-and pred_expr =
-  | WarpIs   of int
-  | WarpIn   of int list
-  | InBounds of string * int list
-
 type kernel = {
-  name   : string;
-  arch   : arch;
-  elem   : elem;
-  tile   : tile_shape;
+  name : string;
+  arch : arch;
+  elem : elem;
+  tile : tile_shape;
   stages : int;
-  args   : (string * elem * space) list;
-  body   : stmt;
+  args : tensor_arg list;
+  body: stmt;
 }
 
 let make ~name ~arch ~elem ~tile ~stages ~args ~body =
   { name; arch; elem; tile; stages; args; body }
 
-let arg name e s = Arg (name, e, s)
+let tensor_arg name e sp = Arg (name, e, sp)
+let arg name e sp = Arg (name, e, sp)
+
+let in_arg  name e = (name, e, Global, In)
+let out_arg name e = (name, e, Global, Out)
 
 let smem name e m k = Smem (name, e, { m; n = 0; k })
 
 let load ~src ~dst ?mask () = Load (src, dst, mask)
-
 let store ~src ~dst ?mask () = Store (src, dst, mask)
-
 let mma a b c = Mma (a, b, c)
 
 let pipeline ~stages ~k body = Pipeline ({ stages; k_iters = k }, body)
-
 let syncthreads () = Barrier ThreadSync
 
 let warp_dispatch cases =
   Seq (List.map cases ~f:(fun (pred, body) -> If (pred, body, [])))
 
 let arch_str = function
-  | SM80  -> "SM80"
+  | SM80   -> "SM80"
   | SM90a  -> "SM90a"
   | SM100a -> "SM100a"
 
@@ -104,7 +112,7 @@ let elem_str = function
   | S32  -> "s32"
 
 let rec pp_tensor fmt = function
-  | Arg (name, e, _) ->
+  | Arg (name, e, _ ) ->
     Stdlib.Format.fprintf fmt "%s:%s" name (elem_str e)
   | Tile (t, sh) ->
     Stdlib.Format.fprintf fmt "tile(%a,%dx%dx%d)" pp_tensor t sh.m sh.n sh.k
@@ -127,10 +135,16 @@ let rec pp_stmt fmt = function
     List.iter body ~f:(fun s ->
       Stdlib.Format.fprintf fmt "  %a\n" pp_stmt s);
     Stdlib.Format.fprintf fmt "}"
+  | Barrier MbarFull v ->
+    Stdlib.Format.fprintf fmt "mbar_full(%s)" v
+  | Barrier MbarEmpty v ->
+    Stdlib.Format.fprintf fmt "mbar_empty(%s)" v
+  | Barrier (MbarInit (v, cnt)) ->
+    Stdlib.Format.fprintf fmt "mbar_init(%s, %d)" v cnt
+  | Barrier (MbarWaitParity (v, phase)) ->
+    Stdlib.Format.fprintf fmt "mbar_wait_parity(%s, %d)" v phase
   | Barrier ThreadSync  -> Stdlib.Format.fprintf fmt "syncthreads()"
   | Barrier ClusterSync   -> Stdlib.Format.fprintf fmt "cluster_sync()"
-  | Barrier (MbarFull v)  -> Stdlib.Format.fprintf fmt "mbar_wait_full(%s)" v
-  | Barrier (MbarEmpty v) -> Stdlib.Format.fprintf fmt "mbar_wait_empty(%s)" v
   | For (v, lo, hi, body) ->
     Stdlib.Format.fprintf fmt "for %s = %d to %d { %d stmts }"
       v lo hi (List.length body)
@@ -146,6 +160,8 @@ let rec pp_stmt fmt = function
     List.iter stmts ~f:(fun s ->
       pp_stmt fmt s;
       Stdlib.Format.fprintf fmt "\n")
+  | If (Mbarrier name, t, _) ->
+      Stdlib.Format.fprintf fmt "if mbarrier(%s) { %d stmts }" name (List.length t)
 
 let pp fmt k =
   Stdlib.Format.fprintf fmt "kernel %s arch=%s tile=%dx%dx%d stages=%d\n"

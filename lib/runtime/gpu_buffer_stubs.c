@@ -4,6 +4,7 @@
 #include <caml/alloc.h>
 #include <caml/fail.h>
 #include <caml/custom.h>
+#include <string.h>
 
 
 static void gpu_buffer_finalize(value v) {
@@ -11,9 +12,25 @@ static void gpu_buffer_finalize(value v) {
   if (ptr) cudaFree(ptr);
 }
 
+static void host_buffer_finalize(value v) {
+  void* ptr = *((void**) Data_custom_val(v));
+  if (ptr) cudaFreeHost(ptr);
+}
+
 static struct custom_operations gpu_buffer_ops = {
   "tesserae_gpu_buffer",
   gpu_buffer_finalize,
+  custom_compare_default,
+  custom_hash_default,
+  custom_serialize_default,
+  custom_deserialize_default,
+  custom_compare_ext_default,
+  custom_fixed_length_default
+};
+
+static struct custom_operations host_buffer_ops = {
+  "tesserae_host_buffer",
+  host_buffer_finalize,
   custom_compare_default,
   custom_hash_default,
   custom_serialize_default,
@@ -36,12 +53,50 @@ CAMLprim value caml_gpu_alloc(value n_bytes) {
   CAMLreturn(block);
 }
 
+CAMLprim value caml_host_alloc(value n_bytes) {
+  CAMLparam1(n_bytes);
+  CAMLlocal1(block);
+  void* ptr = NULL;
+  cudaError_t rc = cudaMallocHost(&ptr, Int_val(n_bytes));
+  if (rc != cudaSuccess)
+    caml_failwith(cudaGetErrorString(rc));
+
+  memset(ptr, 0, Int_val(n_bytes));
+
+  block = caml_alloc_custom(&host_buffer_ops, sizeof(void*), 0, 1);
+  *((void**) Data_custom_val(block)) = ptr;
+  CAMLreturn(block);
+}
+
+// Add a direct pointer-to-pointer copy for Host -> Device transfers
+CAMLprim value caml_gpu_copy_ptr_to_ptr(value dst, value src, value n_bytes) {
+  CAMLparam3(dst, src, n_bytes);
+  void* d_ptr = *((void**) Data_custom_val(dst));
+  void* s_ptr = *((void**) Data_custom_val(src));
+
+  cudaError_t rc = cudaMemcpy(d_ptr, s_ptr, Int_val(n_bytes), cudaMemcpyDefault);
+  if (rc != cudaSuccess)
+    caml_failwith(cudaGetErrorString(rc));
+
+  CAMLreturn(Val_unit);
+}
+
 
 CAMLprim value caml_gpu_free(value v) {
   CAMLparam1(v);
   void* ptr = *((void**) Data_custom_val(v));
   if (ptr) {
     cudaFree(ptr);
+    *((void**) Data_custom_val(v)) = NULL;
+  }
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_host_free(value v) {
+  CAMLparam1(v);
+  void* ptr = *((void**) Data_custom_val(v));
+  if (ptr) {
+    cudaFreeHost(ptr);
     *((void**) Data_custom_val(v)) = NULL;
   }
   CAMLreturn(Val_unit);

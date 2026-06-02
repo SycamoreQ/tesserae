@@ -12,9 +12,9 @@ let ampere_kernel () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
+    ~args:[ Kernel_ast.in_arg "A" Kernel_ast.F16
+          ; Kernel_ast.in_arg "B" Kernel_ast.F16
+          ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Seq [])
 
 let hopper_kernel () =
@@ -24,9 +24,9 @@ let hopper_kernel () =
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 64 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32,  Kernel_ast.Global) ]
+    ~args:[ Kernel_ast.in_arg "A" Kernel_ast.BF16
+          ; Kernel_ast.in_arg "B" Kernel_ast.BF16
+          ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Seq [])
 
 let blackwell_kernel () =
@@ -36,9 +36,9 @@ let blackwell_kernel () =
     ~elem:Kernel_ast.BF16
     ~tile:{ Kernel_ast.m = 128; n = 256; k = 64 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.BF16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32,  Kernel_ast.Global) ]
+    ~args:[ Kernel_ast.in_arg "A" Kernel_ast.BF16
+          ; Kernel_ast.in_arg "B" Kernel_ast.BF16
+          ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Seq [])
 
 let lower_and_emit k =

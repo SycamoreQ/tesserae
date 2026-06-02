@@ -23,9 +23,9 @@ let ampere_source () =
     ~elem:Kernel_ast.F16
     ~tile:{ Kernel_ast.m = 128; n = 128; k = 32 }
     ~stages:4
-    ~args:[ ("A", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("B", Kernel_ast.F16, Kernel_ast.Global)
-          ; ("C", Kernel_ast.F32, Kernel_ast.Global) ]
+    ~args:[ Kernel_ast.in_arg "A" Kernel_ast.F16
+          ; Kernel_ast.in_arg "B" Kernel_ast.F16
+          ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
     ~body:(Kernel_ast.Seq [])
   in
   match Compile.to_source k with

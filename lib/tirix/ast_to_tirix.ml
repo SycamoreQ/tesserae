@@ -60,8 +60,8 @@ let make_tensor name (elem : Kernel_ast.elem) (space : Kernel_ast.space)
   let Elem e = lower_elem elem in
   let Space m = lower_space space in
   Tirix.Tensor {
-    tensor_name      = name
-  ; tensor_id        = Tirix.Type_id.create ()
+    tensor_name = name
+  ; tensor_id = Tirix.Type_id.create ()
   ; tensor_elem_type = e
   ; tensor_memspace  = m
   ; tensor_layout    = layout
@@ -119,15 +119,27 @@ let lower_mask (m : Kernel_ast.mask) : bool Tirix.expr =
         Cmp (Lt, Tirix.Var v, Tirix.Const (S32, Int32.of_int_exn bound))))
 
 let lower_barrier = function
+  | Kernel_ast.MbarInit (mbar, count) ->
+      let v = { Tirix.var_name = mbar; var_id = 0; var_type = Tirix.Scalar Tirix.U64; var_mutable = false } in
+      Tirix.MbarInit { mbar = v; count }
+
+  | Kernel_ast.MbarWaitParity (mbar, phase) ->
+      let v = { Tirix.var_name = mbar; var_id = 0; var_type = Tirix.Scalar Tirix.U64; var_mutable = false } in
+      Tirix.MbarWaitParity { mbar = v; phase = Tirix.Const (Tirix.S32, Int32.of_int_exn phase) }
   | Kernel_ast.ThreadSync  -> Tirix.CtaSync
+
   | Kernel_ast.ClusterSync -> Tirix.ClusterArrive
+
   | Kernel_ast.MbarFull  var ->
     let v = { Tirix.var_name=var; var_id=0
             ; var_type=Tirix.Scalar Tirix.S32; var_mutable=false } in
+
     Tirix.MbarWaitParity { mbar=v; phase=Tirix.Const (Tirix.S32, 0l) }
+
   | Kernel_ast.MbarEmpty var ->
     let v = { Tirix.var_name=var; var_id=0
             ; var_type=Tirix.Scalar Tirix.S32; var_mutable=false } in
+
     Tirix.MbarArrive { mbar=v }
 
 let lower_pred (p : Kernel_ast.pred_expr) : bool Tirix.expr =
@@ -142,56 +154,65 @@ let lower_pred (p : Kernel_ast.pred_expr) : bool Tirix.expr =
                Tirix.Const (Tirix.S32, Int32.of_int_exn n))))
   | Kernel_ast.InBounds (var, bounds) ->
     lower_mask { Kernel_ast.coord_var = var; bounds }
+  | Kernel_ast.Mbarrier _ -> Tirix.Const (Tirix.Bool, true)
+
+let rec is_tma_source name = function
+  | Kernel_ast.Load (Arg (n, _, Global), Smem _, _) when String.equal n name -> true
+  | Kernel_ast.For (_, _, _, body) -> List.exists body ~f:(is_tma_source name)
+  | Kernel_ast.Seq ss -> List.exists ss ~f:(is_tma_source name)
+  | _ -> false
 
 let lower_params (ctx : ctx) (k : Kernel_ast.kernel) : Tirix.param list =
   let flat = Layout.make (Modes.Int 1) (Modes.Int 1) in
   let sw   = Swizzle.make 0 0 0 in
-  List.map k.Kernel_ast.args ~f:(fun (name, elem, space) ->
+  List.map k.Kernel_ast.args ~f:(fun (name, elem, space, _dir) ->
     let is_tma = match ctx.arch, space with
-      | (Kernel_ast.SM90a | Kernel_ast.SM100a), Kernel_ast.Global -> true
-      | _ -> false
-    in
-    { Tirix.param_name   = name
+       | (SM90a | SM100a), Global -> is_tma_source name k.body
+       | _ -> false
+     in
+    { Tirix.param_name = name
     ; param_tensor = make_tensor name elem space flat sw
     ; param_is_tma = is_tma
     })
 
 let lower_family = function
-  | Kernel_ast.SM80    -> Kernel_desc.Ampere
-  | Kernel_ast.SM90a   -> Kernel_desc.Hopper
-  | Kernel_ast.SM100a  -> Kernel_desc.Blackwell
+  | Kernel_ast.SM80 -> Kernel_desc.Ampere
+  | Kernel_ast.SM90a -> Kernel_desc.Hopper
+  | Kernel_ast.SM100a -> Kernel_desc.Blackwell
 
 let rec collect_tensors (stmt : Kernel_ast.stmt)
     (acc : (string * Tirix.packed_tensor) list)
     : (string * Tirix.packed_tensor) list =
   let flat = Layout.make (Modes.Int 1) (Modes.Int 1) in
   let sw   = Swizzle.make 0 0 0 in
+  let add_unique name tensor tensors =
+    if List.exists tensors ~f:(fun (n, _) -> String.equal n name) then tensors
+    else (name, tensor) :: tensors
+  in
   match stmt with
   | Kernel_ast.Load (src, dst, _) | Kernel_ast.Store (src, dst, _) ->
-    let tensors = [] in
+    let tensors = acc in
     let tensors = match src with
       | Kernel_ast.Arg (name, elem, space) ->
-        (name, make_tensor name elem space flat sw) :: tensors
+        add_unique name (make_tensor name elem space flat sw) tensors
       | Kernel_ast.Smem (name, elem, shape) ->
         let layout = Layout.make
           (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
           (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m]) in
-        (name, make_tensor name elem Kernel_ast.Shared layout sw) :: tensors
+        add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
       | _ -> tensors
     in
     let tensors = match dst with
-      | Kernel_ast.Arg (name, elem, space)
-        when not (List.exists tensors ~f:(fun (n,_) -> String.equal n name)) ->
-        (name, make_tensor name elem space flat sw) :: tensors
-      | Kernel_ast.Smem (name, elem, shape)
-        when not (List.exists tensors ~f:(fun (n,_) -> String.equal n name)) ->
+      | Kernel_ast.Arg (name, elem, space) ->
+        add_unique name (make_tensor name elem space flat sw) tensors
+      | Kernel_ast.Smem (name, elem, shape) ->
         let layout = Layout.make
           (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
           (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m]) in
-        (name, make_tensor name elem Kernel_ast.Shared layout sw) :: tensors
+        add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
       | _ -> tensors
     in
-    tensors @ acc
+    tensors
   | Kernel_ast.Mma (a, b, c) ->
     let collect_one expr acc = match expr with
       | Kernel_ast.Arg (name, elem, space)
@@ -235,7 +256,7 @@ let rec has_tma_load (arch : Kernel_ast.arch) (stmt : Kernel_ast.stmt) : bool =
 let make_mbar_tensors (depth : int) : (string * Tirix.packed_tensor) list =
   (* Layout size = depth so emit_shared_storage emits uint64_t full_mbar[depth] *)
   let flat = Layout.make (Modes.Int depth) (Modes.Int 1) in
-  let sw   = Swizzle.make 0 0 0 in
+  let sw = Swizzle.make 0 0 0 in
   let make name = Tirix.Tensor {
     tensor_name = name
   ; tensor_id = Tirix.Type_id.create ()
@@ -271,31 +292,55 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     let arrive_stmts = match mbar_var with
       | None -> []
       | Some mbar ->
-        let bytes = ctx.bm * ctx.bk * ctx.elem_bytes in
+        let bytes = match dst_expr with
+          | Kernel_ast.Smem (_, _, shape) -> shape.Kernel_ast.m * shape.Kernel_ast.k * ctx.elem_bytes
+          | _ -> ctx.bm * ctx.bk * ctx.elem_bytes
+        in
         [ Tirix.SOp (Tirix.Barrier (Tirix.MbarArriveExpect {
             mbar
           ; bytes = Tirix.Const (Tirix.S32, Int32.of_int_exn bytes)
-          })) ]
+          })) ]   (* TMA load already performs an implicit arrive *)
+    in
+    let tma_coord_scaled var_opt tensor_expr dim_f =
+      match var_opt, tensor_expr with
+      | Some v, Kernel_ast.Smem (_, _, shape) ->
+        let strip = dim_f shape in
+        if strip > 0 then
+          Some (Tirix.Arith (Tirix.Arith.Mul, Tirix.Var v,
+            Tirix.Const (Tirix.S32, Int32.of_int_exn strip)))
+        else
+          Some (Tirix.Var v)
+      | Some v, _ -> Some (Tirix.Var v)
+      | None, _ -> None
     in
 
     let copy_stmt = Tirix.SOp (Tirix.Copy {
-        copy_kind   = kind
-      ; src_tensor  = src
-      ; dst_tensor  = dst
-      ; pred_expr   = pred
+        copy_kind = kind
+      ; src_tensor = src
+      ; dst_tensor = dst
+      ; pred_expr = pred
       ; mbar_var
-      ; tma_coord_k = Option.map loop_ctx.k_var   ~f:(fun v -> Tirix.Var v)
-      ; tma_coord_m = Option.map loop_ctx.m_var   ~f:(fun v -> Tirix.Var v)
-      ; tma_coord_n = Option.map loop_ctx.n_var   ~f:(fun v -> Tirix.Var v)
-      ; stage_var   = loop_ctx.stage_var
+      ; tma_coord_k = tma_coord_scaled loop_ctx.k_var dst_expr (fun s -> s.Kernel_ast.k)
+      ; tma_coord_m = tma_coord_scaled loop_ctx.m_var dst_expr (fun s -> s.Kernel_ast.m)
+      ; tma_coord_n = tma_coord_scaled loop_ctx.n_var dst_expr (fun s -> s.Kernel_ast.n)
+      ; stage_var = loop_ctx.stage_var
       }) in
 
+    let phase_expr =
+      match loop_ctx.k_var with
+      | Some kv ->
+          Tirix.Arith (Tirix.Arith.Mod, Tirix.Var kv,
+            Tirix.Const (Tirix.S32, 2l))
+      | None -> Tirix.Const (Tirix.S32, 0l)
+
+    in
 
     let wait_stmts = match mbar_var with
       | None -> []
       | Some mbar ->
         [ Tirix.SOp (Tirix.Barrier (Tirix.MbarWaitParity {
-            mbar; phase = Tirix.Const (Tirix.S32, 0l) })) ]
+            mbar; phase = phase_expr }))
+        ; Tirix.SOp (Tirix.Barrier Tirix.CtaSync) ]
     in
 
     (match arrive_stmts @ [copy_stmt] @ wait_stmts with
@@ -307,17 +352,29 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     let dst  = lookup_tensor ctx dst_expr in
     let kind = infer_copy_kind ctx src dst in
     let pred = Option.map mask_opt ~f:lower_mask in
+    let tma_coord_scaled var_opt tensor_expr dim_f =
+      match var_opt, tensor_expr with
+      | Some v, Kernel_ast.Smem (_, _, shape) ->
+        let strip = dim_f shape in
+        if strip > 0 then
+          Some (Tirix.Arith (Tirix.Arith.Mul, Tirix.Var v,
+            Tirix.Const (Tirix.S32, Int32.of_int_exn strip)))
+        else
+          Some (Tirix.Var v)
+      | Some v, _ -> Some (Tirix.Var v)
+      | None, _ -> None
+    in
 
     let copy_stmt = Tirix.SOp (Tirix.Copy {
-        copy_kind   = kind
-      ; src_tensor  = src
-      ; dst_tensor  = dst
-      ; pred_expr   = pred
-      ; mbar_var    = None
-      ; tma_coord_k = Option.map loop_ctx.k_var ~f:(fun v -> Tirix.Var v)
-      ; tma_coord_m = Option.map loop_ctx.m_var ~f:(fun v -> Tirix.Var v)
-      ; tma_coord_n = Option.map loop_ctx.n_var ~f:(fun v -> Tirix.Var v)
-      ; stage_var   = loop_ctx.stage_var
+        copy_kind = kind
+      ; src_tensor = src
+      ; dst_tensor = dst
+      ; pred_expr = pred
+      ; mbar_var = None
+      ; tma_coord_k = tma_coord_scaled loop_ctx.k_var src_expr (fun s -> s.Kernel_ast.k)
+      ; tma_coord_m = tma_coord_scaled loop_ctx.m_var src_expr (fun s -> s.Kernel_ast.m)
+      ; tma_coord_n = tma_coord_scaled loop_ctx.n_var src_expr (fun s -> s.Kernel_ast.n)
+      ; stage_var = loop_ctx.stage_var
       }) in
 
     let arrive_empty = match ctx.empty_mbar with
@@ -351,7 +408,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     ; var_mutable     = true
     } in
     let new_loop_ctx = match var_name with
-      | "k" | "k_loop"             -> { loop_ctx with k_var     = Some loop_var }
+      | "k" | "k_loop" | "k_tile"  -> { loop_ctx with k_var     = Some loop_var }
       | "m" | "row"   | "block_m"  -> { loop_ctx with m_var     = Some loop_var }
       | "n" | "col"   | "block_n"  -> { loop_ctx with n_var     = Some loop_var }
       | "stage" | "s"              -> { loop_ctx with stage_var = Some loop_var }
@@ -389,29 +446,32 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
 
 
 let lower (k : Kernel_ast.kernel) : Tirix.tirix =
-  let tensors       = collect_tensors k.Kernel_ast.body [] in
-  let needs_tma     = has_tma_load k.Kernel_ast.arch k.Kernel_ast.body in
+  let tensors = collect_tensors k.Kernel_ast.body [] in
+  let needs_tma = has_tma_load k.Kernel_ast.arch k.Kernel_ast.body in
   let pipeline_depth = k.Kernel_ast.stages in
 
   let (full_mbar_var, empty_mbar_var, mbar_tensors) =
     if needs_tma then
-      (Some (make_mbar_var "full_mbar"),
-       Some (make_mbar_var "empty_mbar"),
-       make_mbar_tensors pipeline_depth)
+      let need_empty = pipeline_depth > 1 in
+      ( Some (make_mbar_var "full_mbar")
+      , (if need_empty then Some (make_mbar_var "empty_mbar") else None)
+      , if need_empty then make_mbar_tensors pipeline_depth
+        else List.filter (make_mbar_tensors pipeline_depth)
+               ~f:(fun (n, _) -> String.equal n "full_mbar") )
     else
       (None, None, [])
   in
 
   let ctx = {
-    arch           = k.Kernel_ast.arch
-  ; tensors        = tensors @ mbar_tensors
-  ; var_counter    = ref 0
-  ; full_mbar      = full_mbar_var
-  ; empty_mbar     = empty_mbar_var
+    arch = k.Kernel_ast.arch
+  ; tensors = tensors @ mbar_tensors
+  ; var_counter = ref 0
+  ; full_mbar  = full_mbar_var
+  ; empty_mbar = empty_mbar_var
   ; pipeline_depth
-  ; bm             = k.Kernel_ast.tile.Kernel_ast.m
-  ; bk             = k.Kernel_ast.tile.Kernel_ast.k
-  ; elem_bytes     = elem_byte_width k.Kernel_ast.elem
+  ; bm = k.Kernel_ast.tile.Kernel_ast.m
+  ; bk = k.Kernel_ast.tile.Kernel_ast.k
+  ; elem_bytes = elem_byte_width k.Kernel_ast.elem
   } in
 
   (* __syncthreads() after mbarrier init loop (warp 0 lane 0) so that
@@ -429,7 +489,7 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
         [ (0, Cluster.Producer); (1, Cluster.Consumer)
         ; (2, Cluster.Epilogue); (3, Cluster.Epilogue) ]
     | Kernel_ast.SM90a ->
-      Cluster.make { Cluster.x=2; y=1; z=1 } 8
+      Cluster.make { Cluster.x=1; y=1; z=1 } 8
         [ (0, Cluster.Producer); (1, Cluster.Consumer)
         ; (2, Cluster.Consumer); (3, Cluster.Consumer)
         ; (4, Cluster.Consumer); (5, Cluster.Epilogue)
