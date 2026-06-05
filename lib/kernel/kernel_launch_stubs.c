@@ -159,7 +159,7 @@ CAMLprim value caml_create_tma_descriptor(
     box_dim,
     elem_stride,
     CU_TENSOR_MAP_INTERLEAVE_NONE,
-    CU_TENSOR_MAP_SWIZZLE_NONE,
+    CU_TENSOR_MAP_SWIZZLE_128B,
     CU_TENSOR_MAP_L2_PROMOTION_NONE,
     CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
   );

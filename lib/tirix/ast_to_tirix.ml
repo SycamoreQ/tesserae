@@ -90,7 +90,7 @@ let rec lookup_tensor (ctx : ctx) (expr : Kernel_ast.tensor_expr)
 
   | Kernel_ast.LocalTile (inner, _) -> lookup_tensor ctx inner
 
-let memspace_name (Tirix.Tensor t) = Memspace.name t.tensor_memspace
+  let memspace_name (Tirix.Tensor t) = Memspace.name t.tensor_memspace
 
 let infer_copy_kind (ctx : ctx)
     (src : Tirix.packed_tensor) (dst : Tirix.packed_tensor) : Tirix.copy_kind =
@@ -166,13 +166,22 @@ let lower_pred (p : Kernel_ast.pred_expr) : bool Tirix.expr =
 
   | Kernel_ast.Mbarrier _ -> Tirix.Const (Tirix.Bool, true)
 
+
 let rec is_tma_source name = function
   | Kernel_ast.Load (Arg (n, _, Global), Smem _, _) when String.equal n name -> true
 
-  | Kernel_ast.For (_, _, _, body) -> List.exists body ~f:(is_tma_source name)
+  | Kernel_ast.For (_, _, _, body) ->
+    List.exists body ~f:(is_tma_source name)
 
-  | Kernel_ast.Seq ss -> List.exists ss ~f:(is_tma_source name)
+  | Kernel_ast.Seq ss ->
+    List.exists ss ~f:(is_tma_source name)
 
+  | Kernel_ast.If (_, thn, els) ->                        (* add this *)
+    List.exists thn ~f:(is_tma_source name) ||
+    List.exists els ~f:(is_tma_source name)
+
+  | Kernel_ast.Pipeline (_, stmts) ->                     (* add this *)
+    List.exists stmts ~f:(is_tma_source name)
   | _ -> false
 
 let lower_params (ctx : ctx) (k : Kernel_ast.kernel) : Tirix.param list =
@@ -210,13 +219,27 @@ let rec collect_tensors (stmt : Kernel_ast.stmt)
         add_unique name (make_tensor name elem space flat sw) tensors
 
       | Kernel_ast.Smem (name, elem, shape) ->
-        let layout = Layout.make
-          (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
-          (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m]) in
+          let m = shape.Kernel_ast.m in
+          let n = shape.Kernel_ast.n in
+          let k = shape.Kernel_ast.k in
+          let layout =
+            if n > 0 then
+              (* B is K×N, row-major *)
+              Layout.make
+                (Modes.Tuple [Modes.Int k; Modes.Int n])
+                (Modes.Tuple [Modes.Int 1; Modes.Int k])
+            else
+              (* A is M×K, col-major *)
+              Layout.make
+                (Modes.Tuple [Modes.Int m; Modes.Int k])
+                (Modes.Tuple [Modes.Int 1; Modes.Int m])
+          in
         add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
 
       | _ -> tensors
+
     in
+
     let tensors = match dst with
       | Kernel_ast.Arg (name, elem, space) ->
         add_unique name (make_tensor name elem space flat sw) tensors
@@ -247,6 +270,7 @@ let rec collect_tensors (stmt : Kernel_ast.stmt)
       | _ -> acc
     in
     collect_one c (collect_one b (collect_one a acc))
+
   | Kernel_ast.For (_, _, _, body) ->
     List.fold body ~init:acc ~f:(fun acc s -> collect_tensors s acc)
   | Kernel_ast.Pipeline (_, stmts) ->
@@ -356,7 +380,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       ; stage_var = loop_ctx.stage_var
       }) in
 
-    let phase_expr =
+    let _phase_expr =
       match loop_ctx.k_var with
       | Some kv ->
           Tirix.Arith (Tirix.Arith.Mod, Tirix.Var kv,
@@ -365,13 +389,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
 
     in
 
-    let wait_stmts = match mbar_var with
-      | None -> []
-      | Some mbar ->
-        [ Tirix.SOp (Tirix.Barrier (Tirix.MbarWaitParity {
-            mbar; phase = phase_expr }))
-        ; Tirix.SOp (Tirix.Barrier Tirix.CtaSync) ]
-    in
+    let wait_stmts = [] in
 
     (match arrive_stmts @ [copy_stmt] @ wait_stmts with
      | [s] -> s
@@ -418,22 +436,38 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
      | many -> Tirix.SSeq many)
 
   | Kernel_ast.Mma (a_expr, b_expr, c_expr) ->
-    let kind = infer_mma_kind ctx in
-    Tirix.SOp (Tirix.Mma {
-      mma_kind    = kind
-    ; mma_atom    = Tirix.default_atom_for_kind kind
-    ; tensor_a    = lookup_tensor ctx a_expr
-    ; tensor_b    = lookup_tensor ctx b_expr
-    ; tensor_c    = lookup_tensor ctx c_expr
-    ; smem_desc_a = None
-    ; smem_desc_b = None
-    ; accum_flag  = true
-    })
+      let kind = infer_mma_kind ctx in
+      let mma_op = Tirix.SOp (Tirix.Mma {
+        mma_kind = kind
+        ; mma_atom = Tirix.default_atom_for_kind kind
+        ; tensor_a = lookup_tensor ctx a_expr
+        ; tensor_b = lookup_tensor ctx b_expr
+        ; tensor_c = lookup_tensor ctx c_expr
+        ; smem_desc_a = None
+        ; smem_desc_b = None
+        ; accum_flag = true
+      }) in
+      (* consumer must wait for producer TMA before WGMMA *)
+      let wait_phase =
+        match loop_ctx.k_var with
+        | Some kv ->
+            Tirix.Arith (Tirix.Arith.Mod, Tirix.Var kv,
+                         Tirix.Const (Tirix.S32, 2l))
+        | None -> Tirix.Const (Tirix.S32, 0l)
+      in
+
+      let wait_full = match ctx.full_mbar with
+        | None -> []
+        | Some mbar ->
+            [ Tirix.SOp (Tirix.Barrier (Tirix.MbarWaitParity {
+                mbar; phase = wait_phase })) ]
+      in
+      Tirix.SSeq (wait_full @ [mma_op])
 
   | Kernel_ast.For (var_name, start_val, stop_val, body_stmts) ->
     let loop_var = {
-      Tirix.var_name  = var_name
-    ; var_id          = fresh_id ctx
+      Tirix.var_name = var_name
+    ; var_id  = fresh_id ctx
     ; var_type        = Tirix.Scalar Tirix.S32
     ; var_mutable     = true
     } in
@@ -520,10 +554,14 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
         ; (2, Cluster.Epilogue); (3, Cluster.Epilogue) ]
     | Kernel_ast.SM90a ->
       Cluster.make { Cluster.x=1; y=1; z=1 } 8
-        [ (0, Cluster.Producer); (1, Cluster.Consumer)
-        ; (2, Cluster.Consumer); (3, Cluster.Consumer)
-        ; (4, Cluster.Consumer); (5, Cluster.Epilogue)
-        ; (6, Cluster.Epilogue); (7, Cluster.Epilogue) ]
+        [ (0, Cluster.Producer)
+        ; (1, Cluster.Producer)
+        ; (2, Cluster.Producer)
+        ; (3, Cluster.Producer)
+        ; (4, Cluster.Consumer)
+        ; (5, Cluster.Consumer)
+        ; (6, Cluster.Consumer)
+        ; (7, Cluster.Consumer) ]
     | Kernel_ast.SM100a ->
       Cluster.make { Cluster.x=2; y=1; z=1 } 6
         [ (0, Cluster.Producer); (1, Cluster.Consumer)

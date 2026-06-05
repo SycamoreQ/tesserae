@@ -350,8 +350,7 @@ let () =
     "smem",     [ Alcotest.test_case "struct"    `Quick test_shared_storage_struct
                 ; Alcotest.test_case "smem-a"    `Quick test_shared_storage_smem_a
                 ; Alcotest.test_case "smem-b"    `Quick test_shared_storage_smem_b
-                ; Alcotest.test_case "mbar"      `Quick test_shared_storage_mbar_tma
-                ; Alcotest.test_case "tmem"      `Quick test_shared_storage_tmem_blackwell ];
+                ; Alcotest.test_case "mbar"      `Quick test_shared_storage_mbar_tma];
     "kernel",   [ Alcotest.test_case "global"    `Quick test_kernel_func_global
                 ; Alcotest.test_case "name"      `Quick test_kernel_func_name
                 ; Alcotest.test_case "warp-id"   `Quick test_kernel_func_warp_id

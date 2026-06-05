@@ -47,10 +47,10 @@ val emit_mma : mma_desc -> string
 val emit_op : op -> string
 (** [emit_op op] translates primitive operations (like memory allocations and descriptor initializations) to hardware-level statements. *)
 
-val emit_stmt : ?depth:int -> stmt -> string
+val emit_stmt : ?depth:int -> ?stage_depth:int -> stmt -> string
 (** [emit_stmt ~depth s] compiles an individual structured statement, applying the specified indentation level. *)
 
-val emit_stmts : ?depth:int -> stmt list -> string
+val emit_stmts : ?depth:int -> ?stage_depth:int -> stmt list -> string
 (** [emit_stmts ~depth ss] builds a clean newline-delimited, indented code block from a list of statements. *)
 
 (** {1 Kernel Component Generation} *)

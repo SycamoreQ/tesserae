@@ -2,4 +2,4 @@
  (name tesserae_test_kernels)
  (wrapped true)
  (libraries base tesserae_core tesserae_atoms tesserae_pipeline tesserae_kernel)
- (modules copy_kernel))
+ (modules copy_kernel gemm_warpspec))
