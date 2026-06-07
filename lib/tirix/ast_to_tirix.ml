@@ -485,13 +485,15 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
         ; accum_flag = true
       }) in
       (* consumer must wait for producer TMA before WGMMA *)
+      (* Corrected wait_phase inside Kernel_ast.Mma *)
       let wait_phase =
         match loop_ctx.k_var with
         | Some kv ->
-            Tirix.Arith (Tirix.Arith.Mod, Tirix.Var kv,
-                         Tirix.Const (Tirix.S32, 2l))
-        | None -> Tirix.Const (Tirix.S32, 0l)
-      in
+            Tirix.Arith (Tirix.Arith.Mod,
+              Tirix.Arith (Tirix.Arith.Div, Tirix.Var kv,
+                           Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
+              Tirix.Const (Tirix.S32, 2l))
+        | None -> Tirix.Const (Tirix.S32, 0l) in
 
       let wait_full = match ctx.full_mbar with
         | None -> []

@@ -269,12 +269,18 @@ let emit_copy (c : copy) : string =
     Printf.sprintf
       "%s{\n\
       \  /* SmemToGlobal: %s -> %s */\n\
-      \  const int _tid     = (int)threadIdx.x;\n\
+      \  const int _tid = (int)threadIdx.x;\n\
       \  const int _nthreads = (int)blockDim.x;\n\
       \  const int _n_half2  = (int)(sizeof(smem.%s) / sizeof(__half2));\n\
       \  __half2* _smem_ptr = reinterpret_cast<__half2*>(&smem.%s[0]);\n\
-      \  __half2* _dst_ptr  = reinterpret_cast<__half2*>(const_cast<__half*>(%s)\n\
+      \  __half2* _dst_ptr = reinterpret_cast<__half2*>(const_cast<__half*>(%s)\n\
       \                        + (blockIdx.x * %d + blockIdx.y * %d));\n\
+      \  if (_tid == 0) {\n\
+      \    printf(\"STORE n_half2=%%d first=(%%f,%%f)\\n\",\n\
+      \           _n_half2,\n\
+      \           __low2float(_smem_ptr[0]),\n\
+      \           __high2float(_smem_ptr[0]));\n\
+      \  }\n\
       \  for (int _i = _tid; _i < _n_half2; _i += _nthreads) {\n\
       \    _dst_ptr[_i] = _smem_ptr[_i];\n\
       \  }\n\
@@ -332,7 +338,7 @@ let emit_mma (m : mma_desc) : string =
   | Sm90Wgmma ->
         let (Tensor a) = m.tensor_a in
         let (Tensor b) = m.tensor_b in
-        let (mn_str, at, bt, num_regs, k_val) = match m.mma_atom with
+        let (mn_str, at, bt, num_regs, _k_val) = match m.mma_atom with
           | Atom90 atom ->
             let (_, n, k) = Mma_atom.shape atom in
             let num_regs = n / 2 in
@@ -341,20 +347,38 @@ let emit_mma (m : mma_desc) : string =
             (Printf.sprintf "m64n%dk%d" n k, at, bt, num_regs, k)
           | _ -> failwith "emit_mma: Sm90Wgmma requires Atom90"
         in
-        let accum = if m.accum_flag then 1 else 0 in
+        Stdlib.Printf.printf "[DEBUG]: mn_str: %s" mn_str;
         let a_modes = Layout.modes a.tensor_layout in
         let a_m = match a_modes with
-          | [m; _]    -> m
-          | [_; m; _] -> m
-          | _         -> 64
+        | [m; _] -> m
+        | [_; m; _] -> m
+        | _ -> 64
         in
-        let n_tiles_m    = a_m / 64 in
-        (* bytes for one m64 sub-tile of A: 64 rows × k_val cols × 2 B/F16 *)
-        let sub_tile_bytes = 64 * k_val * 2 in
-        let lead = (k_val * 2) / 16 in
-        let sw_lead_bits = Int64.of_int (lead lsl 16) in
-        let or_const = Int64.to_string sw_lead_bits in
-        (* reg_tokens is IDENTICAL for every sub-tile asm block because each
+        (* NEW: extract the actual tile K from A's layout *)
+        let a_k = match a_modes with
+        | [_; k] -> k
+        | [_; _; k] -> k
+        | _ -> 16
+        in
+        let b_modes = Layout.modes b.tensor_layout in
+        (* NEW: extract the actual tile N from B's layout *)
+        let b_n = match b_modes with
+        | [_; n] -> n
+        | [_; _; n] -> n
+        | _ -> 128
+        in
+        (* Add these lines to see the values during compilation *)
+        let n_tiles_m = a_m / 64 in
+        (* bytes for one m64 sub-tile of A: 64 rows × a_k cols × 2 bytes/F16 *)
+        let sub_tile_bytes = 64 * a_k * 2 in
+        (* WGMMA descriptor lead = row_stride_in_bytes / 16 *)
+        let _a_lead = (a_k * 2) / 16 in
+        let _b_lead = (b_n * 2) / 16 in
+        let a_lbo = a_k * 2 in
+        let a_sbo = 64 * a_k * 2 in
+        let b_lbo = b_n * 2 in
+        let b_sbo = a_k * b_n * 2 in
+        (* reg_tokens is identical for every sub-tile asm block because each
            asm volatile restarts its operand numbering from %0 independently. *)
         let reg_tokens =
           List.init num_regs ~f:(fun i -> Printf.sprintf "%%%d" i)
@@ -363,26 +387,41 @@ let emit_mma (m : mma_desc) : string =
         (* B matrix is the same K×N tile for every M sub-tile – declare once. *)
         let desc_b_expr =
           Printf.sprintf
-            "make_wgmma_desc(\
-               (uint32_t)(offsetof(SharedStorage, %s) + (stage * (sizeof(smem.%s)))), \
-               %sULL)"
-            b.tensor_name b.tensor_name or_const
+            "make_wgmma_desc(
+                (uint32_t)(offsetof(SharedStorage,%s)
+                  + stage*sizeof(smem.%s)),
+                %d,
+                %d,
+                0)"
+            b.tensor_name
+            b.tensor_name
+            b_lbo
+            b_sbo
         in
         (* one wgmma call per m64 sub-tile *)
         let sub_tile_strs =
           List.init n_tiles_m ~f:(fun tile_m ->
             (* Point desc_a at the tile_m-th 64-row slice of smem_A *)
-            let a_offset    = tile_m * sub_tile_bytes in
+            let a_offset = tile_m * sub_tile_bytes in
             let desc_a_expr =
               Printf.sprintf
-                "make_wgmma_desc(\
-                   (uint32_t)(offsetof(SharedStorage, %s) \
-                              + (stage * (sizeof(smem.%s))) + %d), \
-                   %sULL)"
-                a.tensor_name a.tensor_name a_offset or_const
+                "make_wgmma_desc(
+                    (uint32_t)(offsetof(SharedStorage,%s)
+                    + stage*sizeof(smem.%s)
+                    + %d),
+                    %d,
+                    %d,
+                    0)"
+                a.tensor_name
+                a.tensor_name
+                a_offset
+                a_lbo
+                a_sbo
             in
+            Stdlib.Printf.printf "[DEBUG]: A desc expr = %s\n%!" desc_a_expr;
+            Stdlib.Printf.printf "[DEBUG]: B desc expr = %s\n%!" desc_b_expr;
             (* This sub-tile accumulates into acc_frag[reg_base .. reg_base+num_regs) *)
-            let reg_base    = tile_m * num_regs in
+            let reg_base = tile_m * num_regs in
             let acc_outputs =
               List.init num_regs ~f:(fun i ->
                 Printf.sprintf "\"+f\"(acc_frag[%d])" (reg_base + i))
@@ -408,6 +447,7 @@ let emit_mma (m : mma_desc) : string =
               accum
               acc_outputs)
         in
+
         (* Wrap everything: desc_b lives in the outer scope so every sub-tile
            asm block can reference it via the "l"(desc_b) input constraint. *)
         Printf.sprintf
@@ -584,6 +624,10 @@ let rec emit_stmt ?(depth = 0) ?stage_depth  (s : stmt) : string =
       emit_stmts ~depth ?stage_depth mainloop;
       Printf.sprintf "%s// pipeline epilogue" ind;
       emit_stmts ~depth ?stage_depth epilogue;
+      Printf.sprintf "%s// DEBUG stages=%d" ind stages;
+      Printf.sprintf "%s// DEBUG stage_depth=%d"
+        ind
+        (Option.value ~default:(-1) stage_depth);
     ]
   | SWarpGroup (role, body) ->
     let role_s = match role with
@@ -663,7 +707,7 @@ let emit_params (k : tirix) : string =
              Qualifier order matters: "const CUtensorMap* __grid_constant__"
              — NVRTC requires __grid_constant__ to annotate the pointer param,
              not the pointee type. *)
-             Printf.sprintf "const CUtensorMap* %s_tmap" p.param_name
+             Printf.sprintf "const CUtensorMap* const __grid_constant__ %s_tmap" p.param_name
         else
           Printf.sprintf "%s* %s" elem_t p.param_name))
 
@@ -741,6 +785,7 @@ let emit_mbar_init_loop (k : tirix) : string =
       \         \"n\"(%d) : \"memory\");\n\
       %s\
       \    }\n\
+      \    asm volatile(\"fence.mbarrier_init.release.cluster;\");\n\
       \  }\n\
       \  __syncthreads();"
       depth full_count empty_init
@@ -893,26 +938,36 @@ let emit_includes (k : tirix) : string =
     "__device__ inline uint64_t make_smem_desc_raw(";
     "    void* smem_ptr, uint32_t lead, uint32_t stride, uint32_t sw) {";
     "  uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem_ptr);";
-    "  return ((uint64_t)sw << 52) | ((uint64_t)stride << 36) |";
+    "  return ((uint64_t)sw << 62) | ((uint64_t)stride << 36) |";
     "         ((uint64_t)lead << 16) | (addr >> 4);";
     "}";
     "";
     "// WGMMA matrix descriptor builder.";
-    "// Receives a plain char* generic pointer (never a .shared symbol";
-    "// reference directly) so NVRTC is forced to emit cvta.to.shared.u64";
-    "// rather than folding away the conversion.";
-    "__device__ __forceinline__ uint64_t make_wgmma_desc(uint32_t smem_offset, uint64_t or_bits) {";
+    "// Builds full Hopper descriptor with LBO/SBO/swizzle fields.";
+    "__device__ __forceinline__ uint64_t make_wgmma_desc(";
+    "    uint32_t smem_offset,";
+    "    uint32_t lbo,";
+    "    uint32_t sbo,";
+    "    uint32_t swizzle) {";
+    "";
     "  uint64_t desc;";
+    "";
     "  asm volatile(";
     "    \"{ .reg .u64 saddr;\\n\\t\"";
-    "    \".reg .u32 lo;\\n\\t\"";
-    "    \"mov.u64 saddr, smem_buf;\\n\\t\"";
-    "    \"cvt.u32.u64 lo, saddr;\\n\\t\"";
-    "    \"add.u32 lo, lo, %1;\\n\\t\"";
-    "    \"shr.u32 lo, lo, 4;\\n\\t\"";
-    "    \"cvt.u64.u32 %0, lo;\\n\\t\"";
-    "    \"or.b64 %0, %0, %2; }\\n\\t\"";
-    "    : \"=l\"(desc) : \"r\"(smem_offset), \"l\"(or_bits));";
+    "    \"  .reg .u32 lo;\\n\\t\"";
+    "    \"  mov.u64 saddr, smem_buf;\\n\\t\"";
+    "    \"  cvt.u32.u64 lo, saddr;\\n\\t\"";
+    "    \"  add.u32 lo, lo, %1;\\n\\t\"";
+    "    \"  shr.u32 lo, lo, 4;\\n\\t\"";
+    "    \"  cvt.u64.u32 %0, lo;\\n\\t\"";
+    "    \"}\"";
+    "    : \"=l\"(desc)";
+    "    : \"r\"(smem_offset));";
+    "";
+    "  desc |= ((uint64_t)lbo) << 16;";
+    "  desc |= ((uint64_t)sbo) << 32;";
+    "  desc |= ((uint64_t)swizzle) << 62;";
+    "";
     "  return desc;";
     "}";
     "";
@@ -960,6 +1015,8 @@ let emit (k : tirix) : Backend_cute.output =
   let full_source = String.concat ~sep:"\n\n"
     [ kernel_source; host_launcher ]
   in
+  Stdlib.Printf.printf "=== Generated kernel: %s ===\n%s\n=== End kernel ===\n%!"
+    k.name full_source;
   { Backend_cute.filename = k.name ^ ".cuh"
   ; includes
   ; helpers

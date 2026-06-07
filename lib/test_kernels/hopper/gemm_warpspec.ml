@@ -7,7 +7,7 @@ let gemm_hopper_ws () =
     ~arch:SM90a
     ~elem:F16
     ~tile:{ m = 128; n = 128; k = 64 }
-    ~stages:1
+    ~stages:4
     ~args:[ ("A", F16, Global, In)
           ; ("B", F16, Global, In)
           ; ("C", F32, Global, Out) ]
