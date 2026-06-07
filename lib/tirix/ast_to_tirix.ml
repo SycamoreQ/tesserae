@@ -78,13 +78,22 @@ let rec lookup_tensor (ctx : ctx) (expr : Kernel_ast.tensor_expr)
      | None -> make_tensor name elem space flat sw)
 
   | Kernel_ast.Smem (name, elem, shape) ->
-    let layout = Layout.make
-      (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
-      (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m])
-    in
-    (match List.find ctx.tensors ~f:(fun (n,_) -> String.equal n name) with
-     | Some (_, t) -> t
-     | None -> make_tensor name elem Kernel_ast.Shared layout sw)
+      let m = shape.Kernel_ast.m in
+      let n = shape.Kernel_ast.n in
+      let k = shape.Kernel_ast.k in
+      let layout =
+        if n > 0 then
+          Layout.make
+            (Modes.Tuple [Modes.Int k; Modes.Int n])
+            (Modes.Tuple [Modes.Int 1; Modes.Int k])
+        else
+          Layout.make
+            (Modes.Tuple [Modes.Int m; Modes.Int k])
+            (Modes.Tuple [Modes.Int 1; Modes.Int m])
+      in
+      (match List.find ctx.tensors ~f:(fun (n,_) -> String.equal n name) with
+       | Some (_, t) -> t
+       | None -> make_tensor name elem Kernel_ast.Shared layout sw)
 
   | Kernel_ast.Tile (inner, _)      -> lookup_tensor ctx inner
 
@@ -241,17 +250,27 @@ let rec collect_tensors (stmt : Kernel_ast.stmt)
     in
 
     let tensors = match dst with
-      | Kernel_ast.Arg (name, elem, space) ->
-        add_unique name (make_tensor name elem space flat sw) tensors
+          | Kernel_ast.Arg (name, elem, space) ->
+            add_unique name (make_tensor name elem space flat sw) tensors
 
-      | Kernel_ast.Smem (name, elem, shape) ->
-        let layout = Layout.make
-          (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
-          (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m]) in
-        add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
+          | Kernel_ast.Smem (name, elem, shape) ->
+            let m = shape.Kernel_ast.m in
+            let n = shape.Kernel_ast.n in
+            let k = shape.Kernel_ast.k in
+            let layout =
+              if n > 0 then
+                Layout.make
+                  (Modes.Tuple [Modes.Int k; Modes.Int n])
+                  (Modes.Tuple [Modes.Int 1; Modes.Int k])
+              else
+                Layout.make
+                  (Modes.Tuple [Modes.Int m; Modes.Int k])
+                  (Modes.Tuple [Modes.Int 1; Modes.Int m])
+            in
+            add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
 
-      | _ -> tensors
-    in
+          | _ -> tensors
+        in
     tensors
 
   | Kernel_ast.Mma (a, b, c) ->
@@ -261,11 +280,21 @@ let rec collect_tensors (stmt : Kernel_ast.stmt)
         (name, make_tensor name elem space flat sw) :: acc
 
       | Kernel_ast.Smem (name, elem, shape)
-        when not (List.exists acc ~f:(fun (n,_) -> String.equal n name)) ->
-        let layout = Layout.make
-          (Modes.Tuple [Modes.Int shape.Kernel_ast.m; Modes.Int shape.Kernel_ast.k])
-          (Modes.Tuple [Modes.Int 1; Modes.Int shape.Kernel_ast.m]) in
-        (name, make_tensor name elem Kernel_ast.Shared layout sw) :: acc
+              when not (List.exists acc ~f:(fun (n,_) -> String.equal n name)) ->
+              let m = shape.Kernel_ast.m in
+              let n = shape.Kernel_ast.n in
+              let k = shape.Kernel_ast.k in
+              let layout =
+                if n > 0 then
+                  Layout.make
+                    (Modes.Tuple [Modes.Int k; Modes.Int n])
+                    (Modes.Tuple [Modes.Int 1; Modes.Int k])
+                else
+                  Layout.make
+                    (Modes.Tuple [Modes.Int m; Modes.Int k])
+                    (Modes.Tuple [Modes.Int 1; Modes.Int m])
+              in
+              (name, make_tensor name elem Kernel_ast.Shared layout sw) :: acc
 
       | _ -> acc
     in
@@ -346,15 +375,23 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       | None -> []
       | Some mbar ->
         let bytes = match dst_expr with
-          | Kernel_ast.Smem (_, _, shape) -> shape.Kernel_ast.m * shape.Kernel_ast.k * ctx.elem_bytes
-
+          | Kernel_ast.Smem (_, _, shape) ->
+            let total =
+              if shape.Kernel_ast.n > 0 then
+                shape.Kernel_ast.k * shape.Kernel_ast.n
+              else
+                shape.Kernel_ast.m * shape.Kernel_ast.k
+            in
+            total * ctx.elem_bytes
           | _ -> ctx.bm * ctx.bk * ctx.elem_bytes
         in
+
         [ Tirix.SOp (Tirix.Barrier (Tirix.MbarArriveExpect {
             mbar
           ; bytes = Tirix.Const (Tirix.S32, Int32.of_int_exn bytes)
-          })) ]   (* TMA load already performs an implicit arrive *)
+          })) ]
     in
+
     let tma_coord_scaled var_opt tensor_expr dim_f =
       match var_opt, tensor_expr with
       | Some v, Kernel_ast.Smem (_, _, shape) ->

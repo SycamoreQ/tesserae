@@ -19,7 +19,7 @@ let gemm_hopper_ws () =
             load ~src:(Arg ("A", F16, Global))
                  ~dst:(Smem ("smem_A", F16, { m = 128; n = 0; k = 64 })) ();
             load ~src:(Arg ("B", F16, Global))
-                 ~dst:(Smem ("smem_B", F16, { m = 64; n = 128; k = 0 })) ();  (* rows=64, cols=128 *)
+                 ~dst:(Smem ("smem_B", F16, { m = 0; n = 128; k = 64 })) ();
           ])
         ]);
 
@@ -29,13 +29,11 @@ let gemm_hopper_ws () =
           For ("k", 0, 4, [
             mma
               (Smem ("smem_A", F16, { m = 128; n = 0; k = 64 }))
-              (Smem ("smem_B", F16, { m = 128; n = 128; k = 64 }))
+              (Smem ("smem_B", F16, { m = 0; n = 128; k = 64 }))
               (Arg  ("acc",    F32, Register));
           ]);
-          store ~src:(Arg ("acc", F32, Register))  (*no issue with load and store*)
+          store ~src:(Arg ("acc", F32, Register))
                 ~dst:(Arg ("C",   F32, Global)) ();
         ]);
-        (* warps 1,2,3 are idle — same warpgroup 0 as the producer,
-           they must NOT execute wgmma                                      *)
       ]
     )

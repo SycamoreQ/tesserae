@@ -54,7 +54,7 @@ let emit_cpp_helper () : string =
   \  uint64_t desc = ((uint64_t)addr & 0xFFFF) |\n\
   \                 (((uint64_t)leading & 0xFFFF) << 16) |\n\
   \                 (((uint64_t)stride & 0x1FFFFFFF) << 32) |\n\
-  \                 (((uint64_t)sw & 0x3) << 61);\n\
+  \                 (((uint64_t)sw & 0x3) << 60);\n\
   \  return desc;\n\
   }"
 

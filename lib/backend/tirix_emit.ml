@@ -352,11 +352,7 @@ let emit_mma (m : mma_desc) : string =
         (* bytes for one m64 sub-tile of A: 64 rows × k_val cols × 2 B/F16 *)
         let sub_tile_bytes = 64 * k_val * 2 in
         let lead = (k_val * 2) / 16 in
-        let sw_lead_bits =
-          Int64.bit_or
-            (Int64.shift_left 2L 52)
-            (Int64.of_int (lead lsl 16))
-        in
+        let sw_lead_bits = Int64.of_int (lead lsl 16) in
         let or_const = Int64.to_string sw_lead_bits in
         (* reg_tokens is IDENTICAL for every sub-tile asm block because each
            asm volatile restarts its operand numbering from %0 independently. *)
