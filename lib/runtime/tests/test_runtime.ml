@@ -99,10 +99,10 @@ let test_gemm_hopper_ws () =
       let func = Kernel_launch.get_function module_ "gemm_hopper_ws" in
 
 
-      let smem_bytes = ((128 * 64 * 2) + (128 * 64 * 2)) + 64 in
+      let smem_bytes = 4 * ((128 * 64 * 2) + (128 * 64 * 2)) + 64 in
       Kernel_launch.launch func
         ~grid:(1, 1, 1)
-        ~block:(128, 1, 1)
+        ~block:(256, 1, 1)
         ~smem:smem_bytes
         ~args:[ tma_a; tma_b; Gpu_buffer.ptr buf_c ];
 

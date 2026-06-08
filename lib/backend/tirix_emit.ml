@@ -389,7 +389,7 @@ let emit_mma (m : mma_desc) : string =
           Printf.sprintf
             "make_wgmma_desc(
                 (uint32_t)(offsetof(SharedStorage,%s)
-                  + stage*sizeof(smem.%s)),
+                  + stage*sizeof(smem.%s[0])),
                 %d,
                 %d,
                 0)"
@@ -407,7 +407,7 @@ let emit_mma (m : mma_desc) : string =
               Printf.sprintf
                 "make_wgmma_desc(
                     (uint32_t)(offsetof(SharedStorage,%s)
-                    + stage*sizeof(smem.%s)
+                    + stage*sizeof(smem.%s[0])
                     + %d),
                     %d,
                     %d,
@@ -964,8 +964,8 @@ let emit_includes (k : tirix) : string =
     "    : \"=l\"(desc)";
     "    : \"r\"(smem_offset));";
     "";
-    "  desc |= ((uint64_t)lbo) << 16;";
-    "  desc |= ((uint64_t)sbo) << 32;";
+    "  desc |= ((uint64_t)lbo >> 4) << 16;";
+    "  desc |= ((uint64_t)sbo >> 4) << 32;";
     "  desc |= ((uint64_t)swizzle) << 62;";
     "";
     "  return desc;";
