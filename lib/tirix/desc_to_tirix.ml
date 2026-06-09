@@ -394,7 +394,7 @@ let construct_consumer_body
     | Atom80 a -> let (_, _, k) = Mma_atom.shape a in k
     | Atom100 a -> let (_, _, k) = Mma_atom.shape a in k
   in
-  let bk    = desc.Kernel_desc.bk in
+  let bk = desc.Kernel_desc.bk in
   let depth = desc.Kernel_desc.pipeline.Pipeline.depth in
   let let_stage = SAssign (stage_var,
     Expr (Arith (Mod,

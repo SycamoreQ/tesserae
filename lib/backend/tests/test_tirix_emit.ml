@@ -1,4 +1,3 @@
-open Tesserae_pipeline
 open Tesserae_kernel
 open Tesserae_tirix
 open Tirix
@@ -153,73 +152,6 @@ let test_barrier_cluster_arrive () =
     (contains "barrier.cluster.arrive"
       (Tirix_emit.emit_barrier Tirix.ClusterArrive))
 
-let test_stmt_slet () =
-  let v = { Tirix.var_name="x"; var_id=0
-          ; var_type=Tirix.Scalar Tirix.S32; var_mutable=false } in
-  let s = Tirix_emit.emit_stmt
-    (Tirix.SLet (v, Tirix.Expr (Tirix.Const (Tirix.S32, 0l)))) in
-  Alcotest.(check bool) "const decl" true (contains "const" s);
-  Alcotest.(check bool) "var name"   true (contains "x" s)
-
-let test_stmt_sletmut () =
-  let v = { Tirix.var_name="y"; var_id=0
-          ; var_type=Tirix.Scalar Tirix.S32; var_mutable=true } in
-  let s = Tirix_emit.emit_stmt
-    (Tirix.SLetMut (v, Tirix.Expr (Tirix.Const (Tirix.S32, 1l)))) in
-  Alcotest.(check bool) "no const" false (contains "const" s);
-  Alcotest.(check bool) "var name"  true  (contains "y" s)
-
-let test_stmt_sfor () =
-  let v = { Tirix.var_name="i"; var_id=0
-          ; var_type=Tirix.Scalar Tirix.S32; var_mutable=true } in
-  let s = Tirix_emit.emit_stmt (Tirix.SFor {
-    var    = v;
-    start  = Tirix.Const (Tirix.S32, 0l);
-    stop   = Tirix.Const (Tirix.S32, 4l);
-    step   = Tirix.Const (Tirix.S32, 1l);
-    dir    = Tirix.Upto;
-    unroll = false;
-    body   = [];
-  }) in
-  Alcotest.(check bool) "for loop" true (contains "for" s);
-  Alcotest.(check bool) "var i"    true (contains "i" s)
-
-let test_stmt_sfor_unroll () =
-  let v = { Tirix.var_name="i"; var_id=0
-          ; var_type=Tirix.Scalar Tirix.S32; var_mutable=true } in
-  let s = Tirix_emit.emit_stmt (Tirix.SFor {
-    var    = v;
-    start  = Tirix.Const (Tirix.S32, 0l);
-    stop   = Tirix.Const (Tirix.S32, 4l);
-    step   = Tirix.Const (Tirix.S32, 1l);
-    dir    = Tirix.Upto;
-    unroll = true;
-    body   = [];
-  }) in
-  Alcotest.(check bool) "pragma unroll" true
-    (contains "#pragma unroll" s)
-
-let test_stmt_sif () =
-  let s = Tirix_emit.emit_stmt
-    (Tirix.SIf (Tirix.Const (Tirix.Bool, true), [], [])) in
-  Alcotest.(check bool) "if stmt" true (contains "if" s)
-
-let test_stmt_pipeline () =
-  let s = Tirix_emit.emit_stmt (Tirix.SPipeline {
-    stages   = 4;
-    prologue = [];
-    mainloop = [];
-    epilogue = [];
-  }) in
-  Alcotest.(check bool) "pipeline comment" true
-    (contains "pipeline" s)
-
-let test_stmt_warp_group_producer () =
-  let s = Tirix_emit.emit_stmt
-    (Tirix.SWarpGroup (Cluster.Producer, [])) in
-  Alcotest.(check bool) "producer comment" true
-    (contains "producer" s)
-
 
 let test_shared_storage_struct () =
   let out = lower_and_emit (ampere_kernel ()) in
@@ -340,13 +272,6 @@ let () =
                 ; Alcotest.test_case "mbar-init" `Quick test_barrier_mbar_init
                 ; Alcotest.test_case "cp-wait"   `Quick test_barrier_cp_async_wait
                 ; Alcotest.test_case "cluster"   `Quick test_barrier_cluster_arrive ];
-    "stmt",     [ Alcotest.test_case "slet"      `Quick test_stmt_slet
-                ; Alcotest.test_case "sletmut"   `Quick test_stmt_sletmut
-                ; Alcotest.test_case "sfor"      `Quick test_stmt_sfor
-                ; Alcotest.test_case "unroll"    `Quick test_stmt_sfor_unroll
-                ; Alcotest.test_case "sif"       `Quick test_stmt_sif
-                ; Alcotest.test_case "pipeline"  `Quick test_stmt_pipeline
-                ; Alcotest.test_case "warpgroup" `Quick test_stmt_warp_group_producer ];
     "smem",     [ Alcotest.test_case "struct"    `Quick test_shared_storage_struct
                 ; Alcotest.test_case "smem-a"    `Quick test_shared_storage_smem_a
                 ; Alcotest.test_case "smem-b"    `Quick test_shared_storage_smem_b

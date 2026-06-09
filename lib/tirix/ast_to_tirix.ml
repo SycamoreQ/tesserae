@@ -34,6 +34,13 @@ let fresh_id (ctx : ctx) : int =
   ctx.var_counter := id + 1;
   id
 
+let mk_stage_var ctx =
+  { Tirix.var_name = "stage"
+  ; var_id = fresh_id ctx
+  ; var_type = Tirix.Scalar Tirix.S32
+  ; var_mutable = true
+  }
+
 let lower_space = function
   | Kernel_ast.Global -> Space Memspace.Global
   | Kernel_ast.Shared -> Space Memspace.Shared
@@ -174,6 +181,27 @@ let lower_pred (p : Kernel_ast.pred_expr) : bool Tirix.expr =
     lower_mask { Kernel_ast.coord_var = var; bounds }
 
   | Kernel_ast.Mbarrier _ -> Tirix.Const (Tirix.Bool, true)
+
+let warp_ids_to_role (ctx : ctx) (ids : int list) : Cluster.warp_role =
+  match ctx.arch with
+  | Kernel_ast.SM90a ->
+    (* warps 0-3 = producer warpgroup, warps 4-7 = consumer warpgroup *)
+    if List.exists ids ~f:(fun id -> id >= 4) then Cluster.Consumer
+    else Cluster.Producer
+  | Kernel_ast.SM100a ->
+    (* warp 0 = producer, warp 1 = consumer, 2-4 = epilogue, 5 = scheduler *)
+    if List.exists ids ~f:(fun id -> id = 1) then Cluster.Consumer
+    else if List.exists ids ~f:(fun id -> id >= 2 && id <= 4) then Cluster.Epilogue
+    else if List.exists ids ~f:(fun id -> id = 5) then Cluster.Scheduler
+    else Cluster.Producer
+  | Kernel_ast.SM80 ->
+    (* warp 0 = producer, 1 = consumer, 2-3 = epilogue *)
+    if List.exists ids ~f:(fun id -> id = 1) then Cluster.Consumer
+    else if List.exists ids ~f:(fun id -> id >= 2) then Cluster.Epilogue
+    else Cluster.Producer
+
+let warp_id_to_role (ctx : ctx) (id : int) : Cluster.warp_role =
+  warp_ids_to_role ctx [id]
 
 
 let rec is_tma_source name = function
@@ -355,6 +383,7 @@ let make_mbar_var name : Tirix.var =
   ; var_type = Tirix.Scalar Tirix.U64; var_mutable = false }
 
 
+
 let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     (stmt : Kernel_ast.stmt) : Tirix.stmt =
   match stmt with
@@ -396,6 +425,14 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       match var_opt, tensor_expr with
       | Some v, Kernel_ast.Smem (_, _, shape) ->
         let strip = dim_f shape in
+        Stdlib.Printf.printf
+          "[LOWERING][TMA] var=%s strip=%d shape=(m=%d n=%d k=%d)\n%!"
+          v.var_name
+          strip
+          shape.Kernel_ast.m
+          shape.Kernel_ast.n
+          shape.Kernel_ast.k;
+
         if strip > 0 then
           Some (Tirix.Arith (Tirix.Arith.Mul, Tirix.Var v,
             Tirix.Const (Tirix.S32, Int32.of_int_exn strip)))
@@ -404,6 +441,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       | Some v, _ -> Some (Tirix.Var v)
       | None, _ -> None
     in
+
 
     let copy_stmt = Tirix.SOp (Tirix.Copy {
         copy_kind = kind
@@ -490,11 +528,10 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
         match loop_ctx.k_var with
         | Some kv ->
             Tirix.Arith (Tirix.Arith.Mod,
-              Tirix.Arith (Tirix.Arith.Div, Tirix.Var kv,
-                           Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
+              Tirix.Var kv,
               Tirix.Const (Tirix.S32, 2l))
-        | None -> Tirix.Const (Tirix.S32, 0l) in
-
+        | None -> Tirix.Const (Tirix.S32, 0l)
+      in
       let wait_full = match ctx.full_mbar with
         | None -> []
         | Some mbar ->
@@ -503,29 +540,106 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       in
       Tirix.SSeq (wait_full @ [mma_op])
 
+
   | Kernel_ast.For (var_name, start_val, stop_val, body_stmts) ->
-    let loop_var = {
-      Tirix.var_name = var_name
-    ; var_id  = fresh_id ctx
-    ; var_type        = Tirix.Scalar Tirix.S32
-    ; var_mutable     = true
-    } in
-    let new_loop_ctx = match var_name with
-      | "k" | "k_loop" | "k_tile"  -> { loop_ctx with k_var = Some loop_var }
-      | "m" | "row"   | "block_m"  -> { loop_ctx with m_var = Some loop_var }
-      | "n" | "col"   | "block_n"  -> { loop_ctx with n_var = Some loop_var }
-      | "stage" | "s"              -> { loop_ctx with stage_var = Some loop_var }
-      | _                          -> loop_ctx
-    in
-    Tirix.SFor {
-      var = loop_var
-    ; start = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val)
-    ; stop = Tirix.Const (Tirix.S32, Int32.of_int_exn stop_val)
-    ; step = Tirix.Const (Tirix.S32, 1l)
-    ; dir = Tirix.Upto
-    ; unroll = false
-    ; body = List.map body_stmts ~f:(convert_stmt ctx new_loop_ctx)
-    }
+
+      let loop_var = {
+        Tirix.var_name = var_name;
+        var_id = fresh_id ctx;
+        var_type = Tirix.Scalar Tirix.S32;
+        var_mutable = true;
+      } in
+
+      let new_loop_ctx =
+        match var_name with
+        | "k" | "k_loop" | "k_tile" ->
+            let stage_var = mk_stage_var ctx in
+            { loop_ctx with
+                k_var = Some loop_var;
+                stage_var = Some stage_var;
+            }
+
+        | "m" | "row" | "block_m" ->
+            { loop_ctx with m_var = Some loop_var }
+
+        | "n" | "col" | "block_n" ->
+            { loop_ctx with n_var = Some loop_var }
+
+        | "stage" | "s" ->
+            { loop_ctx with stage_var = Some loop_var }
+
+        | _ ->
+            loop_ctx
+      in
+
+      let _atom_k = 16 in
+
+      let stage_decl =
+        match new_loop_ctx.stage_var with
+        | Some sv ->
+            Some (
+              Tirix.SLetMut (
+                sv,
+                Expr (Tirix.Const (Tirix.S32, 0l))
+              )
+            )
+        | None ->
+            None
+      in
+
+      let stage_assign =
+        match new_loop_ctx.k_var, new_loop_ctx.stage_var with
+        | Some kv, Some sv ->
+            Some (
+              Tirix.SAssign (
+                sv,
+                Expr (
+                  Tirix.Arith (
+                    Tirix.Arith.Mod,
+                    Tirix.Var kv,
+                    Tirix.Const (
+                      Tirix.S32,
+                      Int32.of_int_exn ctx.pipeline_depth
+                    )
+                  )
+                )
+              )
+            )
+        | _ ->
+            None
+      in
+
+      let lowered_body =
+        List.map body_stmts ~f:(convert_stmt ctx new_loop_ctx)
+      in
+
+      let lowered_body =
+        match stage_assign with
+        | Some s -> s :: lowered_body
+        | None -> lowered_body
+      in
+
+      let for_stmt =
+        Tirix.SFor {
+          var = loop_var;
+          start = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val);
+          stop = Tirix.Const (Tirix.S32, Int32.of_int_exn stop_val);
+          step = Tirix.Const (Tirix.S32, 1l);
+          dir = Tirix.Upto;
+          unroll = false;
+          body = lowered_body;
+        }
+      in
+
+      begin
+        match stage_decl with
+        | Some decl ->
+            Tirix.SSeq [ decl; for_stmt ]
+
+        | None ->
+            for_stmt
+      end
+
 
   | Kernel_ast.Pipeline (desc, stmts) ->
     Tirix.SPipeline {
@@ -539,10 +653,20 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     Tirix.SOp (Tirix.Barrier (lower_barrier b))
 
   | Kernel_ast.If (pred, thn, els) ->
-    Tirix.SIf (
-      lower_pred pred,
-      List.map thn ~f:(convert_stmt ctx loop_ctx),
-      List.map els ~f:(convert_stmt ctx loop_ctx))
+    (match pred with
+     | Kernel_ast.WarpIs n ->
+       let role = warp_id_to_role ctx n in
+       Tirix.SWarpGroup (role,
+         List.map thn ~f:(convert_stmt ctx loop_ctx))
+     | Kernel_ast.WarpIn ns ->
+       let role = warp_ids_to_role ctx ns in
+       Tirix.SWarpGroup (role,
+         List.map thn ~f:(convert_stmt ctx loop_ctx))
+     | _ ->
+       Tirix.SIf (
+         lower_pred pred,
+         List.map thn ~f:(convert_stmt ctx loop_ctx),
+         List.map els ~f:(convert_stmt ctx loop_ctx)))
 
   | Kernel_ast.Seq stmts ->
     Tirix.SSeq (List.map stmts ~f:(convert_stmt ctx loop_ctx))
@@ -583,6 +707,31 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
     if needs_tma then [ Tirix.SOp (Tirix.Barrier Tirix.CtaSync) ]
     else []
   in
+  (* compute smem_bytes from the collected tensors *)
+  let mbar_names = ["full_mbar"; "empty_mbar"] in
+  let data_bytes =
+    List.sum (module Int) ctx.tensors ~f:(fun (name, Tensor t) ->
+      if List.mem mbar_names name ~equal:String.equal then 0
+      else match t.tensor_memspace with
+      | Memspace.Shared ->
+        let elem_size = match t.tensor_elem_type with
+          | Elemtype.Float16 | Elemtype.Bfloat16 -> 2
+          | Elemtype.Float32 | Elemtype.Int32  -> 4
+          | Elemtype.Int8 -> 1
+        in
+        let per_stage = Layout.size t.tensor_layout in
+        (* pipelined TMA kernels use smem_X[pipeline_depth][per_stage] *)
+        let stages = if needs_tma && pipeline_depth > 1
+                     then pipeline_depth else 1 in
+        stages * per_stage * elem_size
+      | _ -> 0)
+  in
+  let mbar_bytes =
+    if needs_tma then
+      let n_arrays = if pipeline_depth > 1 then 2 else 1 in
+      n_arrays * pipeline_depth * 8  (* uint64_t = 8 bytes *)
+    else 0
+  in
 
   let body_stmt = convert_stmt ctx empty_loop_ctx k.Kernel_ast.body in
 
@@ -607,16 +756,16 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
         ; (2, Cluster.Epilogue); (3, Cluster.Epilogue)
         ; (4, Cluster.Epilogue); (5, Cluster.Scheduler) ]
   in
-  { Tirix.name           = k.Kernel_ast.name
-  ; family               = lower_family k.Kernel_ast.arch
-  ; params               = lower_params ctx k
-  ; tensors              = ctx.tensors
-  ; smem_bytes           = 0
+  { Tirix.name = k.Kernel_ast.name
+  ; family = lower_family k.Kernel_ast.arch
+  ; params = lower_params ctx k
+  ; tensors = ctx.tensors
+  ; smem_bytes = data_bytes + mbar_bytes
   ; pipeline_depth
-  ; bm                   = k.Kernel_ast.tile.Kernel_ast.m
-  ; bn                   = k.Kernel_ast.tile.Kernel_ast.n
-  ; bk                   = k.Kernel_ast.tile.Kernel_ast.k
+  ; bm = k.Kernel_ast.tile.Kernel_ast.m
+  ; bn = k.Kernel_ast.tile.Kernel_ast.n
+  ; bk = k.Kernel_ast.tile.Kernel_ast.k
   ; cluster
-  ; body                 = sync_after_init @ [ body_stmt ]
-  ; helpers              = []
+  ; body = sync_after_init @ [ body_stmt ]
+  ; helpers = []
   }

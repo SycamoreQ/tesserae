@@ -76,16 +76,16 @@ let make_hopper
   let lay s d = Layout.make s d in
   let swizzle  = Swizzle.smem_selector elem bm bk in
   let cluster = Cluster.make
-  { Cluster.x = 1; y = 1; z = 1 }
-      8
-      [ (0, Cluster.Producer)
-      ; (1, Cluster.Consumer)
-      ; (2, Cluster.Consumer)
-      ; (3, Cluster.Consumer)
-      ; (4, Cluster.Consumer)
-      ; (5, Cluster.Epilogue)
-      ; (6, Cluster.Epilogue)
-      ; (7, Cluster.Epilogue) ] in
+    { Cluster.x = 1; y = 1; z = 1 }
+    8
+    [ (0, Cluster.Producer)
+    ; (1, Cluster.Producer)
+    ; (2, Cluster.Producer)
+    ; (3, Cluster.Producer)
+    ; (4, Cluster.Consumer)
+    ; (5, Cluster.Consumer)
+    ; (6, Cluster.Consumer)
+    ; (7, Cluster.Consumer) ] in
   let pipeline = Pipeline.make 4
     ((bm + bn) * bk * Elemtype.byte_width elem) in
   let tile_io  = Tile_io.make

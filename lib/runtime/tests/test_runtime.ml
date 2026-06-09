@@ -71,17 +71,28 @@ let test_gemm_hopper_ws () =
   let host_b = Array.init (k * n) ~f:(fun i -> Float.of_int (i % 4)) in
   let host_c = Array.create ~len:(m * n) 0.0 in
 
-  let buf_a = Gpu_buffer.alloc_f16 (m * k) in
-  let buf_b = Gpu_buffer.alloc_f16 (k * n) in
+  let k_total = 256 in
+  let buf_a = Gpu_buffer.alloc_f16 (m * k_total) in
+  let buf_b = Gpu_buffer.alloc_f16 (k_total * n) in
   let buf_c = Gpu_buffer.alloc (m * n) in  (* F32 *)
 
   Gpu_buffer.copy_from_host_f16 buf_a host_a;
   Gpu_buffer.copy_from_host_f16 buf_b host_b;
   Gpu_buffer.copy_from_host buf_c host_c;
 
-  let tma_a = Kernel_launch.create_tma_descriptor (Gpu_buffer.ptr buf_a) m k m k in
-  let tma_b = Kernel_launch.create_tma_descriptor (Gpu_buffer.ptr buf_b) k n k n in
+  (* A: global is M×K = 128×256 row-major
+     tile: load a 128-row × 64-col slice per TMA call
+     coordinate x advances by 64 each k_tile *)
+  let tma_a = Kernel_launch.create_tma_descriptor
+    (Gpu_buffer.ptr buf_a) m k_total 128 64 in
+  (*                         rows  cols  tile_rows tile_cols *)
 
+  (* B: global is K×N = 256×128 row-major
+     tile: load a 64-row × 128-col slice per TMA call
+     coordinate y advances by 64 each k_tile *)
+  let tma_b = Kernel_launch.create_tma_descriptor
+    (Gpu_buffer.ptr buf_b) k_total n 64 128 in
+  (*                         rows   cols tile_rows tile_cols *)
   match Compile.to_ptx (Tesserae_test_kernels.Gemm_warpspec.gemm_hopper_ws()) with
   | Error e ->
       let msg = Stdlib.Format.asprintf "%a" Compile.pp_error e in
@@ -99,11 +110,15 @@ let test_gemm_hopper_ws () =
       let func = Kernel_launch.get_function module_ "gemm_hopper_ws" in
 
 
-      let smem_bytes = 4 * ((128 * 64 * 2) + (128 * 64 * 2)) + 64 in
+      let stages = 4 in
+      let smem_a = stages * 128 * 64 * 2 in  (* __half smem_A[4][8192] *)
+      let smem_b = stages * 128 * 64 * 2 in  (* __half smem_B[4][8192] *)
+      let smem_mbar = 2 * stages * 8 in         (* full_mbar[4] + empty_mbar[4], uint64_t *)
+      let _smem_bytes = smem_a + smem_b + smem_mbar in  (* = 131136 *)
       Kernel_launch.launch func
         ~grid:(1, 1, 1)
         ~block:(256, 1, 1)
-        ~smem:smem_bytes
+        ~smem:131584
         ~args:[ tma_a; tma_b; Gpu_buffer.ptr buf_c ];
 
       Kernel_launch.synchronize ();

@@ -38,19 +38,19 @@ val emit_packed_expr : packed_expr -> string
 val emit_barrier : barrier -> string
 (** [emit_barrier b] generates raw inline PTX or CUDA cooperative group synchronization strings. *)
 
-val emit_copy : copy -> string
+val emit_copy : tirix -> copy -> string
 (** [emit_copy c] generates data movement primitives (e.g., [cp.async], TMA descriptors, or CuTe copies). *)
 
 val emit_mma : mma_desc -> string
 (** [emit_mma m] emits hardware matrix multiply-accumulate calls (Ampere [cute::gemm], Hopper [wgmma], or Blackwell [tcgen05]). *)
 
-val emit_op : op -> string
+val emit_op : tirix -> op -> string
 (** [emit_op op] translates primitive operations (like memory allocations and descriptor initializations) to hardware-level statements. *)
 
-val emit_stmt : ?depth:int -> ?stage_depth:int -> stmt -> string
+val emit_stmt : tirix -> ?depth:int -> ?stage_depth:int -> stmt -> string
 (** [emit_stmt ~depth s] compiles an individual structured statement, applying the specified indentation level. *)
 
-val emit_stmts : ?depth:int -> ?stage_depth:int -> stmt list -> string
+val emit_stmts : tirix -> ?depth:int -> ?stage_depth:int -> stmt list -> string
 (** [emit_stmts ~depth ss] builds a clean newline-delimited, indented code block from a list of statements. *)
 
 (** {1 Kernel Component Generation} *)
@@ -58,7 +58,7 @@ val emit_stmts : ?depth:int -> ?stage_depth:int -> stmt list -> string
 val emit_shared_storage : tirix -> string
 (** [emit_shared_storage k] constructs the overarching global [SharedStorage] structure holding tensors, asynchronous mbarriers, and tmem addresses. *)
 
-val emit_helper : helper_func -> string
+val emit_helper : tirix -> helper_func -> string
 (** [emit_helper h] generates fully typed inline device utilities ([__device__ __forceinline__]). *)
 
 val emit_params : tirix -> string

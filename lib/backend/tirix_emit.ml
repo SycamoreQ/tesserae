@@ -164,7 +164,7 @@ let emit_barrier = function
     "asm volatile(\"tcgen05.fence::after_thread_sync;\");"
 
 
-let emit_copy (c : copy) : string =
+let emit_copy (k: tirix) (c : copy) : string =
   let (Tensor src) = c.src_tensor in
   let (Tensor dst) = c.dst_tensor in
 
@@ -182,15 +182,16 @@ let emit_copy (c : copy) : string =
 
   | TmaLoad ->
     let coord_k = match c.tma_coord_k with
-      | Some e -> emit_expr e
-      | None -> "0"
+      | Some e -> emit_expr e | None -> "0"
     in
     let coord_m = match c.tma_coord_m with
-      | Some e -> emit_expr e
-      | None -> "0"
+      | Some e -> emit_expr e | None -> "0"
+    in
+    let coord_n = match c.tma_coord_n with
+      | Some e -> emit_expr e | None -> "0"
     in
     let stage_off = match c.stage_var with
-      | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s)))" v.var_name dst.tensor_name
+      | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s[0])))" v.var_name dst.tensor_name
       | None -> ""
     in
     let mbar_s = match c.mbar_var with
@@ -198,10 +199,34 @@ let emit_copy (c : copy) : string =
       | Some v ->
         Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))" v.var_name
     in
+    let () =
+      match c.stage_var with
+      | None ->
+          Stdlib.Printf.printf "[DEBUG] TmaLoad stage_var = NONE\n%!"
+      | Some v ->
+          Stdlib.Printf.printf "[DEBUG] TmaLoad stage_var = %s\n%!"
+            v.var_name
+    in
+    Stdlib.Printf.printf
+      "[DEBUG] coord_k=%s stage=%s\n%!"
+      coord_k
+      (match c.stage_var with
+       | None -> "NONE"
+       | Some v -> v.var_name);
+
+    let is_b = String.is_substring dst.tensor_name ~substring:"_B" in
+    let x_coord, y_coord =
+      if is_b then (coord_k, coord_n)   (* B : row = k, col = n *)
+      else         (coord_m, coord_k)   (* A : row = m, col = k *)
+    in
+    Stdlib.Printf.printf "[DEBUG] TmaLoad dst=%s tma_coord_n=%s coord_k=%s x=%s y=%s\n%!"
+      dst.tensor_name
+      (match c.tma_coord_n with Some _ -> "Some" | None -> "None")
+      coord_k x_coord y_coord;
     Printf.sprintf
       "%stma_2d_gmem2smem(__smem_base + offsetof(SharedStorage, %s)%s, \
        %s_tmap, %s, %s, %s);"
-      pred dst.tensor_name stage_off src.tensor_name coord_k coord_m mbar_s
+      pred dst.tensor_name stage_off src.tensor_name x_coord y_coord mbar_s
 
   | TmaMulticast ->
     let coord_k = match c.tma_coord_k with
@@ -237,16 +262,17 @@ let emit_copy (c : copy) : string =
       in
       (match dst.tensor_memspace with
        | Memspace.Global ->
+         let n_regs = k.bm * k.bn / 128 in
          Printf.sprintf
            "{\n\
-           \  const int _n = (int)(sizeof(%s) / sizeof(float));\n\
+           \  const int _n = %d;\n\
            \  /* subtract warpgroup base so local_tid ∈ [0,127] for warps 4-7 */\n\
            \  const int _local_tid = (int)threadIdx.x %% 128;\n\
            \  for (int _i = 0; _i < _n; _i++) {\n\
            \    %s[_local_tid * _n + _i] = %s[_i];\n\
            \  }\n\
             }"
-           src_name dst.tensor_name src_name
+           n_regs dst.tensor_name src_name
        | _ ->
          Printf.sprintf "cute::copy(%s, %s);" src_name dst.tensor_name)
 
@@ -338,16 +364,16 @@ let emit_mma (m : mma_desc) : string =
   | Sm90Wgmma ->
         let (Tensor a) = m.tensor_a in
         let (Tensor b) = m.tensor_b in
-        let (mn_str, at, bt, num_regs, _k_val) = match m.mma_atom with
+        let (mn_str, at, bt, num_regs, atom_k) =
+          match m.mma_atom with
           | Atom90 atom ->
-            let (_, n, k) = Mma_atom.shape atom in
-            let num_regs = n / 2 in
-            let at = String.lowercase (Mma_atom.elem_string atom.Mma_atom.a_type) in
-            let bt = String.lowercase (Mma_atom.elem_string atom.Mma_atom.b_type) in
-            (Printf.sprintf "m64n%dk%d" n k, at, bt, num_regs, k)
+              let (_, n, k) = Mma_atom.shape atom in
+              let num_regs = n / 2 in
+              let at = String.lowercase (Mma_atom.elem_string atom.Mma_atom.a_type) in
+              let bt = String.lowercase (Mma_atom.elem_string atom.Mma_atom.b_type) in
+              (Printf.sprintf "m64n%dk%d" n k, at, bt, num_regs, k)
           | _ -> failwith "emit_mma: Sm90Wgmma requires Atom90"
         in
-        Stdlib.Printf.printf "[DEBUG]: mn_str: %s" mn_str;
         let a_modes = Layout.modes a.tensor_layout in
         let a_m = match a_modes with
         | [m; _] -> m
@@ -367,6 +393,10 @@ let emit_mma (m : mma_desc) : string =
         | [_; _; n] -> n
         | _ -> 128
         in
+        let k_fragments = a_k / atom_k in
+        let elem_bytes = 2 in
+        let a_kfrag_bytes = atom_k * elem_bytes in
+        let b_kfrag_bytes = atom_k * b_n * elem_bytes in
         (* Add these lines to see the values during compilation *)
         let n_tiles_m = a_m / 64 in
         (* bytes for one m64 sub-tile of A: 64 rows × a_k cols × 2 bytes/F16 *)
@@ -375,89 +405,157 @@ let emit_mma (m : mma_desc) : string =
         let _a_lead = (a_k * 2) / 16 in
         let _b_lead = (b_n * 2) / 16 in
         let a_lbo = a_k * 2 in
-        let a_sbo = 64 * a_k * 2 in
+        let a_sbo = a_m * a_k * 2 in
         let b_lbo = b_n * 2 in
         let b_sbo = a_k * b_n * 2 in
+        Stdlib.Printf.printf
+          "[DEBUG]: a_lbo=%d a_sbo=%d b_lbo=%d b_sbo=%d\n"
+          a_lbo a_sbo b_lbo b_sbo;
+        Stdlib.Printf.printf
+          "[DEBUG]: mn_str=%s a_m=%d a_k=%d b_n=%d n_tiles_m=%d num_regs=%d\n%!"
+          mn_str a_m a_k b_n n_tiles_m num_regs;
+        Stdlib.Printf.printf
+          "[DEBUG]: atom_k=%d\n%!"
+          (match m.mma_atom with
+           | Atom90 atom ->
+               let (_,_,k) = Mma_atom.shape atom in k
+           | _ -> -1);
+        Stdlib.Printf.printf
+          "[DEBUG]: atom_k=%d a_k=%d k_fragments=%d\n%!"
+          16
+          a_k
+          (a_k / 16);
         (* reg_tokens is identical for every sub-tile asm block because each
            asm volatile restarts its operand numbering from %0 independently. *)
         let reg_tokens =
           List.init num_regs ~f:(fun i -> Printf.sprintf "%%%d" i)
           |> String.concat ~sep:", "
         in
-        (* B matrix is the same K×N tile for every M sub-tile – declare once. *)
-        let desc_b_expr =
-          Printf.sprintf
-            "make_wgmma_desc(
-                (uint32_t)(offsetof(SharedStorage,%s)
-                  + stage*sizeof(smem.%s[0])),
-                %d,
-                %d,
-                0)"
-            b.tensor_name
-            b.tensor_name
-            b_lbo
-            b_sbo
-        in
         (* one wgmma call per m64 sub-tile *)
+        let ref_decls =
+          let total = n_tiles_m * num_regs in
+          List.init total ~f:(fun i ->
+            Printf.sprintf "  float& _f%d = acc_frag[%d];" i i)
+          |> String.concat ~sep:"\n"
+        in
+
         let sub_tile_strs =
-          List.init n_tiles_m ~f:(fun tile_m ->
-            (* Point desc_a at the tile_m-th 64-row slice of smem_A *)
-            let a_offset = tile_m * sub_tile_bytes in
-            let desc_a_expr =
-              Printf.sprintf
-                "make_wgmma_desc(
-                    (uint32_t)(offsetof(SharedStorage,%s)
-                    + stage*sizeof(smem.%s[0])
-                    + %d),
-                    %d,
-                    %d,
-                    0)"
-                a.tensor_name
-                a.tensor_name
-                a_offset
-                a_lbo
-                a_sbo
-            in
-            Stdlib.Printf.printf "[DEBUG]: A desc expr = %s\n%!" desc_a_expr;
-            Stdlib.Printf.printf "[DEBUG]: B desc expr = %s\n%!" desc_b_expr;
-            (* This sub-tile accumulates into acc_frag[reg_base .. reg_base+num_regs) *)
-            let reg_base = tile_m * num_regs in
-            let acc_outputs =
-              List.init num_regs ~f:(fun i ->
-                Printf.sprintf "\"+f\"(acc_frag[%d])" (reg_base + i))
-              |> String.concat ~sep:", "
-            in
-            Printf.sprintf
-              "    { /* m64 sub-tile %d */\n\
-              \      uint64_t desc_a = %s;\n\
-              \      (void)desc_a;\n\
-              \      asm volatile(\"wgmma.fence.sync.aligned;\");\n\
-              \      asm volatile(\n\
-              \        \"wgmma.mma_async.sync.aligned.%s.f32.%s.%s {%s}, %%%d, %%%d, %d, 1, 1, 0, 0;\"\n\
-              \        : %s\n\
-              \        : \"l\"(desc_a), \"l\"(desc_b));\n\
-              \      asm volatile(\"wgmma.commit_group.sync.aligned;\");\n\
-              \      asm volatile(\"wgmma.wait_group.sync.aligned 0;\");\n\
-              \    }"
-              tile_m
-              desc_a_expr
-              mn_str at bt
-              reg_tokens
-              num_regs (num_regs + 1)
-              accum
-              acc_outputs)
+          List.concat_map
+            (List.init n_tiles_m ~f:Fn.id)
+            ~f:(fun tile_m ->
+
+              List.init k_fragments ~f:(fun kfrag ->
+
+                let a_offset =
+                  tile_m * sub_tile_bytes
+                  + kfrag * a_kfrag_bytes
+                in
+
+                let b_offset =
+                  kfrag * b_kfrag_bytes
+                in
+
+                let desc_a_expr =
+                  Printf.sprintf
+                    "make_wgmma_desc(\n\
+                        __smem_base_u32,\n\
+                        (uint32_t)(offsetof(SharedStorage,%s)\n\
+                        + stage*sizeof(smem.%s[0])\n\
+                        + %d),\n\
+                        %d,\n\
+                        %d,\n\
+                        0)"
+                    a.tensor_name
+                    a.tensor_name
+                    a_offset
+                    a_lbo
+                    a_sbo
+                in
+
+                let desc_b_expr =
+                  Printf.sprintf
+                    "make_wgmma_desc(\n\
+                        __smem_base_u32,\n\
+                        (uint32_t)(offsetof(SharedStorage,%s)\n\
+                        + stage*sizeof(smem.%s[0])\n\
+                        + %d),\n\
+                        %d,\n\
+                        %d,\n\
+                        0)"
+                    b.tensor_name
+                    b.tensor_name
+                    b_offset
+                    b_lbo
+                    b_sbo
+                in
+
+                Stdlib.Printf.printf
+                  "[DEBUG] tile_m=%d kfrag=%d a_offset=%d b_offset=%d\n%!"
+                  tile_m
+                  kfrag
+                  a_offset
+                  b_offset;
+
+                Stdlib.Printf.printf
+                  "[DEBUG]: A desc expr = %s\n%!"
+                  desc_a_expr;
+
+                Stdlib.Printf.printf
+                  "[DEBUG]: B desc expr = %s\n%!"
+                  desc_b_expr;
+
+                Stdlib.Printf.printf
+                  "[DEBUG] tile_m=%d kfrag=%d a_offset=%d b_offset=%d\n%!"
+                  tile_m kfrag a_offset b_offset;
+
+                let reg_base = tile_m * num_regs in
+
+                let acc_outputs =
+                  List.init num_regs ~f:(fun i ->
+                    let idx = reg_base + i in
+                    Printf.sprintf "\"+f\"(_f%d)" idx)
+                  |> String.concat ~sep:", "
+                in
+
+                Printf.sprintf
+                  "    { /* m64 sub-tile %d kfrag %d */\n\
+                  \      uint64_t desc_a = %s;\n\
+                  \      uint64_t desc_b = %s;\n\
+                  \      (void)desc_a;\n\
+                  \      (void)desc_b;\n\
+                  \      asm volatile(\"wgmma.fence.sync.aligned;\");\n\
+                  \      asm volatile(\n\
+                  \        \"wgmma.mma_async.sync.aligned.%s.f32.%s.%s {%s}, %%%d, %%%d, %d, 1, 1, 0, 0;\"\n\
+                  \        : %s\n\
+                  \        : \"l\"(desc_a), \"l\"(desc_b));\n\
+                  \      asm volatile(\"wgmma.commit_group.sync.aligned;\");\n\
+                  \      asm volatile(\"wgmma.wait_group.sync.aligned 0;\");\n\
+                  \    }"
+                  tile_m
+                  kfrag
+                  desc_a_expr
+                  desc_b_expr
+                  mn_str
+                  at
+                  bt
+                  reg_tokens
+                  num_regs
+                  (num_regs + 1)
+                  accum
+                  acc_outputs
+              )
+            )
         in
 
         (* Wrap everything: desc_b lives in the outer scope so every sub-tile
            asm block can reference it via the "l"(desc_b) input constraint. *)
-        Printf.sprintf
-          "{\n\
-          \  uint64_t desc_b = %s;\n\
-          \  (void)desc_b;\n\
-          %s\n\
-          }"
-          desc_b_expr
-          (String.concat ~sep:"\n" sub_tile_strs)
+           Printf.sprintf
+             "{\n\
+             %s\n\
+             %s\n\
+             }"
+             ref_decls
+             (String.concat ~sep:"\n" sub_tile_strs)
 
   | Sm100Tcgen05 ->
     let desc_a = match m.smem_desc_a with
@@ -475,27 +573,25 @@ let emit_mma (m : mma_desc) : string =
       desc_a desc_b accum
 
 
+let rec collect = function
+  | [] -> []
+  | SOp (Mma m) :: rest -> m.mma_atom :: collect rest
+  | SWarpGroup (_, body) :: rest -> collect body @ collect rest
+  | SIf (_, thn, els) :: rest -> collect thn @ collect els @ collect rest
+  | SFor { body; _ } :: rest -> collect body @ collect rest
+  | SPipeline { prologue; mainloop; epilogue; _ } :: rest ->
+    collect prologue @ collect mainloop @ collect epilogue @ collect rest
+  | SSeq ss :: rest -> collect ss @ collect rest
+  | _ :: rest -> collect rest
+
 let emit_tiled_mma_decl (k : tirix) : string =
-  let rec collect = function
-    | [] -> []
-    | SOp (Mma m) :: rest -> m.mma_atom :: collect rest
-    | SWarpGroup (_, body) :: rest -> collect body @ collect rest
-    | SIf (_, thn, els) :: rest -> collect thn @ collect els @ collect rest
-    | SFor { body; _ } :: rest -> collect body @ collect rest
-    | SPipeline { prologue; mainloop; epilogue; _ } :: rest ->
-      collect prologue @ collect mainloop @ collect epilogue @ collect rest
-    | SSeq ss :: rest -> collect ss @ collect rest
-    | _ :: rest -> collect rest
-  in
   let atoms = collect k.body in
 
   let has_sm90 = List.exists atoms ~f:(function Atom90 _ -> true | _ -> false) in
-  if has_sm90 then
-    let per_thread = (k.bm * k.bn) / 128 in
-    Printf.sprintf
-      "  float acc_frag[%d];\n\
-      \  for (int i = 0; i < %d; i++) acc_frag[i] = 0.0f;\n"
-      per_thread per_thread
+  if has_sm90 then begin
+    Stdlib.Printf.printf "[DEBUG] emit_tiled_mma_decl: returning empty for SM90\n%!";
+    ""
+  end
   else
     let first_sm80_str =
       List.find_map atoms ~f:(function
@@ -515,8 +611,8 @@ let emit_tiled_mma_decl (k : tirix) : string =
         atom_str k.bm k.bn
 
 
-let emit_op = function
-  | Copy c -> emit_copy c
+let emit_op (k:tirix) = function
+  | Copy c -> emit_copy k c
   | Mma  m -> emit_mma m
   | Barrier b -> emit_barrier b
   | TmemAlloc { addr_var; col_count } ->
@@ -564,7 +660,7 @@ let emit_op = function
 let indent (depth : int) : string = String.make (depth * 2) ' '
 
 
-let rec emit_stmt ?(depth = 0) ?stage_depth  (s : stmt) : string =
+let rec emit_stmt (k: tirix) ?(depth = 0) ?stage_depth  (s : stmt) : string =
   let ind = indent depth in
   match s with
   | SEmpty -> ""
@@ -577,22 +673,20 @@ let rec emit_stmt ?(depth = 0) ?stage_depth  (s : stmt) : string =
       ind (emit_packed_scalar v.var_type) v.var_name (emit_packed_expr e)
 
   | SAssign (v, e) ->
+    Stdlib.Printf.printf
+      "[DEBUG]: SAssign %s\n%!"
+      v.var_name;
     Printf.sprintf "%s%s = %s;"
       ind v.var_name (emit_packed_expr e)
 
   | SOp op ->
-    Printf.sprintf "%s%s" ind (emit_op op)
+    Printf.sprintf "%s%s" ind (emit_op k op)
 
   | SFor { var; start; stop; step; dir = _; unroll; body } ->
     let pragma =
       if unroll then Printf.sprintf "%s#pragma unroll\n" ind else ""
     in
-    let stage_inc = match stage_depth with
-      | Some n when String.equal var.var_name "k"
-                 || String.equal var.var_name "k_tile"
-                 || String.equal var.var_name "k_loop" ->
-          Printf.sprintf "\n%s  stage = (stage + 1) %% %d;" ind n
-      | _ -> ""
+    let stage_inc = ""
     in
     Printf.sprintf
       "%s%sfor (%s %s = %s; %s < %s; %s += %s) {\n%s%s\n%s}"
@@ -600,30 +694,30 @@ let rec emit_stmt ?(depth = 0) ?stage_depth  (s : stmt) : string =
       (emit_packed_scalar var.var_type) var.var_name (emit_expr start)
       var.var_name (emit_expr stop)
       var.var_name (emit_expr step)
-      (emit_stmts ~depth:(depth+1) ?stage_depth body)
+      (emit_stmts k ~depth:(depth+1) ?stage_depth body)
       stage_inc
       ind
 
   | SIf (cond, thn, els) ->
-    let thn_s = emit_stmts ~depth:(depth+1) ?stage_depth thn in
+    let thn_s = emit_stmts k ~depth:(depth+1) ?stage_depth thn in
     let els_s = match els with
       | [] -> ""
       | _  -> Printf.sprintf " else {\n%s\n%s}"
-                 (emit_stmts ~depth:(depth+1) ?stage_depth els) ind
+                 (emit_stmts k ~depth:(depth+1) ?stage_depth els) ind
     in
     Printf.sprintf "%sif (%s) {\n%s\n%s}%s"
       ind (emit_expr cond) thn_s ind els_s
 
-  | SSeq stmts -> emit_stmts ~depth ?stage_depth stmts
+  | SSeq stmts -> emit_stmts k ~depth ?stage_depth stmts
 
   | SPipeline { stages; prologue; mainloop; epilogue } ->
     String.concat ~sep:"\n" [
       Printf.sprintf "%s// pipeline prologue (depth=%d)" ind stages;
-      emit_stmts ~depth ?stage_depth prologue;
+      emit_stmts k ~depth ?stage_depth prologue;
       Printf.sprintf "%s// pipeline mainloop" ind;
-      emit_stmts ~depth ?stage_depth mainloop;
+      emit_stmts k ~depth ?stage_depth mainloop;
       Printf.sprintf "%s// pipeline epilogue" ind;
-      emit_stmts ~depth ?stage_depth epilogue;
+      emit_stmts k ~depth ?stage_depth epilogue;
       Printf.sprintf "%s// DEBUG stages=%d" ind stages;
       Printf.sprintf "%s// DEBUG stage_depth=%d"
         ind
@@ -631,53 +725,56 @@ let rec emit_stmt ?(depth = 0) ?stage_depth  (s : stmt) : string =
     ]
   | SWarpGroup (role, body) ->
     let role_s = match role with
-      | Cluster.Producer ->  "producer"
-      | Cluster.Consumer ->  "consumer"
-      | Cluster.Epilogue ->  "epilogue"
+      | Cluster.Producer -> "producer"
+      | Cluster.Consumer -> "consumer"
+      | Cluster.Epilogue -> "epilogue"
       | Cluster.Scheduler -> "scheduler"
     in
     Printf.sprintf "%s// warp role: %s\n%s"
-      ind role_s (emit_stmts ~depth body)
+      ind role_s (emit_stmts k ~depth body)
 
   | SPragma (pragma, body) ->
     Printf.sprintf "%s#pragma %s\n%s"
-      ind pragma (emit_stmts ~depth body)
+      ind pragma (emit_stmts k ~depth body)
 
 
-  and emit_stmts ?(depth = 0) ?stage_depth (stmts : stmt list) : string =
+  and emit_stmts (k: tirix) ?(depth = 0) ?stage_depth (stmts : stmt list) : string =
     String.concat ~sep:"\n"
       (List.filter_map stmts ~f:(fun s ->
-        let r = emit_stmt ~depth ?stage_depth s in
+        let r = emit_stmt k ~depth ?stage_depth s in
         if String.is_empty r then None else Some r))
 
-let emit_shared_storage (k : tirix) : string =
-  let mbar_names = ["full_mbar"; "empty_mbar"] in
-  let tensor_decls = List.filter_map k.tensors
-    ~f:(fun (name, Tensor t) ->
-      if List.mem mbar_names name ~equal:String.equal then None
-      else match t.tensor_memspace with
-      | Memspace.Shared ->
-        let elem_t = Elemtype.cpp_name t.tensor_elem_type in
-        let size   = Layout.size t.tensor_layout in
-        Some (Printf.sprintf "  %s %s[%d];" elem_t name size)
-      | _ -> None)
-  in
-  let mbar_decls =
-    if tirix_is_tma k then
-      let has_empty = List.exists k.tensors
-        ~f:(fun (n, _) -> String.equal n "empty_mbar") in
-      let full = [Printf.sprintf "  __align__(8) uint64_t full_mbar[%d];" k.pipeline_depth] in
-      let empty = if has_empty then
-        [Printf.sprintf "  __align__(8) uint64_t empty_mbar[%d];" k.pipeline_depth]
-        else [] in
-      full @ empty
-    else []
-  in
-  let all = tensor_decls @ mbar_decls in
-  Printf.sprintf "struct SharedStorage {\n%s\n};" (String.concat ~sep:"\n" all)
+  let emit_shared_storage (k : tirix) : string =
+    let mbar_names = ["full_mbar"; "empty_mbar"] in
+    let tensor_decls = List.filter_map k.tensors
+      ~f:(fun (name, Tensor t) ->
+        if List.mem mbar_names name ~equal:String.equal then None
+        else match t.tensor_memspace with
+        | Memspace.Shared ->
+          let elem_t = Elemtype.cpp_name t.tensor_elem_type in
+          let per_stage = Layout.size t.tensor_layout in
+          if tirix_is_tma k then
+            Some (Printf.sprintf "  __align__(128) %s %s[%d][%d];" elem_t name k.pipeline_depth per_stage)
+          else
+            Some (Printf.sprintf "  %s %s[%d];" elem_t name per_stage)
+        | _ -> None)
+    in
+    let mbar_decls =
+      if tirix_is_tma k then
+        let has_empty = List.exists k.tensors
+          ~f:(fun (n, _) -> String.equal n "empty_mbar") in
+        let full = [Printf.sprintf "  __align__(8) uint64_t full_mbar[%d];" k.pipeline_depth] in
+        let empty = if has_empty then
+          [Printf.sprintf "  __align__(8) uint64_t empty_mbar[%d];" k.pipeline_depth]
+          else [] in
+        full @ empty
+      else []
+    in
+    let all = tensor_decls @ mbar_decls in
+    Printf.sprintf "struct __align__(128) SharedStorage {\n%s\n};" (String.concat ~sep:"\n" all)
 
 
-let emit_helper (h : helper_func) : string =
+let emit_helper (k: tirix) (h : helper_func) : string =
   let builtin_helpers = ["tma_2d_gmem2smem"; "tma_2d_gmem2smem_multicast"; "make_smem_desc_raw"; "make_smem_desc"] in
   if List.mem builtin_helpers h.hf_name ~equal:String.equal then ""
   else
@@ -690,7 +787,7 @@ let emit_helper (h : helper_func) : string =
     "__device__ inline %s %s(%s) {\n%s\n}"
     (emit_packed_scalar h.hf_ret_type)
     h.hf_name params
-    (emit_stmts ~depth:1 h.hf_body)
+    (emit_stmts k ~depth:1 h.hf_body)
 
 let emit_params (k : tirix) : string =
   String.concat ~sep:",\n  "
@@ -752,6 +849,7 @@ let rec count_arrives (stmts : stmt list) : int =
     | SSeq ss -> count_arrives ss
     | SFor { body; _ } -> count_arrives body
     | SIf (_, thn, els) -> max (count_arrives thn) (count_arrives els)
+    | SWarpGroup (_, body) -> count_arrives body
     | SPipeline { prologue; mainloop; epilogue; _ } ->
         count_arrives prologue + count_arrives mainloop + count_arrives epilogue
     | _ -> 0)
@@ -774,6 +872,7 @@ let emit_mbar_init_loop (k : tirix) : string =
         empty_count
       else ""
     in
+
     let full_count = max 1 (count_arrives k.body) in  (* 2 for GEMM, 1 for copy *)
     Printf.sprintf
       "  if (warp_id == 0 && lane_id == 0) {\n\
@@ -805,7 +904,20 @@ let emit_kernel_func (k : tirix) : string =
   let warp_groups = collect_warp_groups k.body in
   let pre_dispatch = filter_non_warp k.body |> filter_builtin_vars in
   let sd = if tirix_is_tma k then Some k.pipeline_depth else None in
-  let pre_s = emit_stmts ~depth:1 ?stage_depth:sd pre_dispatch in
+  let pre_s = emit_stmts k ~depth:1 ?stage_depth:sd pre_dispatch in
+  (* build this once, reuse in the consumer branch *)
+  let sm90_acc_decl =
+    let per_thread = (k.bm * k.bn) / 128 in
+    let atoms = List.concat_map warp_groups ~f:(fun (_, body) -> collect body) in
+    let has90 = List.exists atoms ~f:(function Atom90 _ -> true | _ -> false) in
+    Stdlib.Printf.printf "[DEBUG] sm90_acc_decl: has_atom90=%b per_thread=%d\n%!" has90 per_thread;
+    if has90 then
+      Printf.sprintf
+        "    float acc_frag[%d];\n\
+        \    for (int i = 0; i < %d; i++) acc_frag[i] = 0.0f;\n"
+        per_thread per_thread
+    else ""
+  in
   let warp_cases = List.map warp_groups ~f:(fun (role, body) ->
     let warp_ids = List.filter_map k.cluster.Cluster.warp_roles
       ~f:(fun (id, r) -> if Poly.(r = role) then Some id else None)
@@ -817,8 +929,20 @@ let emit_kernel_func (k : tirix) : string =
         String.concat ~sep:" || "
           (List.map ids ~f:(Printf.sprintf "warp_id == %d"))
     in
-    Printf.sprintf "if (%s) {\n%s\n}"
-      cond (emit_stmts ~depth:2 ?stage_depth:sd body))
+    (* inject acc_frag only into the consumer warpgroup body *)
+    let prefix = match role with
+      | Cluster.Consumer -> sm90_acc_decl
+      | _ -> ""
+    in
+    Stdlib.Printf.printf "[DEBUG] warp_case role=%s prefix_len=%d cond=%s\n%!"
+      (match role with Cluster.Consumer -> "Consumer" | Cluster.Producer -> "Producer" | _ -> "Other")
+      (String.length prefix)
+      cond;
+
+    Stdlib.Printf.printf "[DEBUG] warp_groups count=%d\n%!" (List.length warp_groups);
+
+    Printf.sprintf "if (%s) {\n%s%s\n}"
+      cond prefix (emit_stmts k ~depth:2 ?stage_depth:sd body))
   in
 
   let warp_dispatch =
@@ -833,18 +957,21 @@ let emit_kernel_func (k : tirix) : string =
   in
   let mbar_init_s = emit_mbar_init_loop k in
 
-    Printf.sprintf
-        "extern \"C\" %s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
-        \  extern __shared__ char smem_buf[];\n\
-        \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
-        \  char* __smem_base = smem_buf;\n\
-        \  (void)smem;\n\
-        \  const int warp_id = threadIdx.x / 32;\n\
-        \  const int lane_id = threadIdx.x %% 32;\n\
-        \  (void)lane_id;\n\
-         %s%s\n%s\n%s\n%s\n}\n"
-        cluster_attr n_threads k.name (emit_params k)
-        tiled_mma_s stage_decl mbar_init_s pre_s warp_dispatch
+  Printf.sprintf
+      "extern \"C\" %s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
+      \  extern __shared__ char smem_buf[];\n\
+      \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
+      \  uint32_t __smem_base_u32;\n\
+      \  asm(\"{ .reg .u64 __stmp; cvta.to.shared.u64 __stmp, %%1; cvt.u32.u64 %%0, __stmp; }\"\n\
+      \      : \"=r\"(__smem_base_u32) : \"l\"((unsigned long long)smem_buf));\n\
+      \  char* __smem_base = (char*)(uintptr_t)__smem_base_u32;\n\
+      \  (void)smem;\n\
+      \  const int warp_id = threadIdx.x / 32;\n\
+      \  const int lane_id = threadIdx.x %% 32;\n\
+      \  (void)lane_id;\n\
+       %s%s\n%s\n%s\n%s\n}\n"
+      cluster_attr n_threads k.name (emit_params k)
+      tiled_mma_s stage_decl mbar_init_s pre_s warp_dispatch
 
 
 let emit_host_launcher_params (k : tirix) : string =
@@ -944,30 +1071,19 @@ let emit_includes (k : tirix) : string =
     "";
     "// WGMMA matrix descriptor builder.";
     "// Builds full Hopper descriptor with LBO/SBO/swizzle fields.";
+    "// WGMMA matrix descriptor builder.";
+    "// WGMMA matrix descriptor builder.";
     "__device__ __forceinline__ uint64_t make_wgmma_desc(";
+    "    uint32_t smem_base,";
     "    uint32_t smem_offset,";
     "    uint32_t lbo,";
     "    uint32_t sbo,";
     "    uint32_t swizzle) {";
-    "";
-    "  uint64_t desc;";
-    "";
-    "  asm volatile(";
-    "    \"{ .reg .u64 saddr;\\n\\t\"";
-    "    \"  .reg .u32 lo;\\n\\t\"";
-    "    \"  mov.u64 saddr, smem_buf;\\n\\t\"";
-    "    \"  cvt.u32.u64 lo, saddr;\\n\\t\"";
-    "    \"  add.u32 lo, lo, %1;\\n\\t\"";
-    "    \"  shr.u32 lo, lo, 4;\\n\\t\"";
-    "    \"  cvt.u64.u32 %0, lo;\\n\\t\"";
-    "    \"}\"";
-    "    : \"=l\"(desc)";
-    "    : \"r\"(smem_offset));";
-    "";
-    "  desc |= ((uint64_t)lbo >> 4) << 16;";
-    "  desc |= ((uint64_t)sbo >> 4) << 32;";
-    "  desc |= ((uint64_t)swizzle) << 62;";
-    "";
+    "  uint32_t addr = smem_base + smem_offset;";
+    "  uint64_t desc = (uint64_t)(addr >> 4);";
+    "  desc |= ((uint64_t)(lbo >> 4)) << 16;";
+    "  desc |= ((uint64_t)(sbo >> 4)) << 32;";
+    "  desc |= ((uint64_t)swizzle)    << 62;";
     "  return desc;";
     "}";
     "";
@@ -976,8 +1092,8 @@ let emit_includes (k : tirix) : string =
     "    void* smem, const CUtensorMap* tmap, int x, int y, uint64_t* mbar) {";
     "     if (threadIdx.x == 0) {";
     "       asm volatile(";
-    "         \"cp.async.bulk.tensor.2d.shared::cta.global.mbarrier::complete_tx::bytes\"";  (* this depends on the cluster_dims being (1 , 1 ,1) or (2 , 1 , 1)*)
-    "         \" [%0], [%1, {%2, %3}], [%4];\"";
+    "         \"cp.async.bulk.tensor.2d.shared::cta.global.mbarrier::complete_tx::bytes \"";  (* this depends on the cluster_dims being (1 , 1 ,1) or (2 , 1 , 1)*)
+    "         \"[%0], [%1, {%2, %3}], [%4];\"";
     "         :: \"r\"((uint32_t)__cvta_generic_to_shared(smem)), \"l\"(tmap),";
     "         \"r\"(x), \"r\"(y), \"r\"((uint32_t)__cvta_generic_to_shared(mbar))";
     "          : \"memory\");";
@@ -1005,7 +1121,7 @@ let emit_includes (k : tirix) : string =
 let emit (k : tirix) : Backend_cute.output =
   let includes = emit_includes k in
   let helpers = String.concat ~sep:"\n\n"
-    (List.map k.helpers ~f:emit_helper) in
+    (List.map k.helpers ~f:(emit_helper k )) in
   let shared_storage = emit_shared_storage k in
   let kernel_func = emit_kernel_func k in
   let host_launcher  = emit_host_launcher k in
