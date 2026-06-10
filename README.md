@@ -69,6 +69,8 @@ Kernel_ast  →  Tirix IR  →  Backend (NVRTC/PTX)  →  CUDA Driver Launch
 
 - Tesserae now has all of its tests passing and also has successfully ran a Load and Store on a H100 instance through the TMA. The next goal of the project will be to write full GEMM kernels in Hopper and fix any existing bugs. 
 
+- Wrote a basic Hopper kernel with swizzle = 0 , one producer and consumer warp. I will iterate over it later.
+
 - A Lexer should also be built on top of kernel_ast which helps in having some syntactic sugar to write native Tesserae Kernels. 
 
 ## Requirements
