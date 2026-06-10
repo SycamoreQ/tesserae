@@ -103,9 +103,9 @@ let test_gemm_hopper_ws () =
         | Some p -> p
         | None -> Alcotest.fail "No PTX generated"
       in
-      Stdlib.Printf.printf
+      (*Stdlib.Printf.printf
         "================ PTX ================\n%s\n=====================================\n%!"
-        ptx;
+        ptx; *)
       let module_ = Kernel_launch.load_ptx ptx in
       let func = Kernel_launch.get_function module_ "gemm_hopper_ws" in
 

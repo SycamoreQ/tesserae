@@ -540,21 +540,28 @@ let test_barrier_cluster_sync () =
 
 let test_if_warp_is () =
   let tirix = Ast_to_tirix.lower (ampere_with_if_warp ()) in
-  let rec has_if = function
+  let rec has_warp_group = function
     | [] -> false
-    | SIf _ :: _ -> true
+    | Tirix.SWarpGroup _ :: _ -> true
     | s :: rest ->
       (match s with
-       | SSeq stmts -> has_if stmts || has_if rest
-       | _ -> has_if rest)
+       | Tirix.SSeq stmts -> has_warp_group stmts || has_warp_group rest
+       | _ -> has_warp_group rest)
   in
-  Alcotest.(check bool) "has SIf" true (has_if tirix.body)
+  Alcotest.(check bool) "has SWarpGroup" true (has_warp_group tirix.body)
 
-let test_if_warp_is_cond_uses_warp_id () =
+let test_if_warp_is_cond_uses_role () =
   let tirix = Ast_to_tirix.lower (ampere_with_if_warp ()) in
-  let s = Tirix_pp.pp_tirix tirix in
-  Alcotest.(check bool) "warp_id in cond" true
-    (contains "warp_id" s || contains "WarpId" s)
+  let rec has_producer = function
+    | [] -> false
+    | Tirix.SWarpGroup (Cluster.Producer, _) :: _ -> true
+    | s :: rest ->
+      (match s with
+       | Tirix.SSeq stmts -> has_producer stmts || has_producer rest
+       | _ -> has_producer rest)
+  in
+  Alcotest.(check bool) "producer role in dispatch" true
+    (has_producer tirix.body)
 
 
 let test_seq_produces_sseq () =
@@ -580,15 +587,16 @@ let test_seq_length () =
 
 let test_warp_dispatch_produces_sif () =
   let tirix = Ast_to_tirix.lower (ampere_with_warp_dispatch ()) in
-  let rec has_if = function
-    | [] -> false
-    | SIf _ :: _ -> true
+  let rec count_warp_groups = function
+    | [] -> 0
+    | Tirix.SWarpGroup _ :: rest -> 1 + count_warp_groups rest
     | s :: rest ->
       (match s with
-       | SSeq stmts -> has_if stmts || has_if rest
-       | _ -> has_if rest)
+       | Tirix.SSeq stmts -> count_warp_groups stmts + count_warp_groups rest
+       | _ -> count_warp_groups rest)
   in
-  Alcotest.(check bool) "has SIf" true (has_if tirix.body)
+  let n = count_warp_groups tirix.body in
+  Alcotest.(check int) "two warp groups" 2 n
 
 let test_verify_empty () =
   let tirix = Ast_to_tirix.lower (ampere_empty ()) in
@@ -670,7 +678,7 @@ let () =
     "barrier",    [ Alcotest.test_case "thread-sync"   `Quick test_barrier_thread_sync
                   ; Alcotest.test_case "cluster-sync"  `Quick test_barrier_cluster_sync ];
     "if",         [ Alcotest.test_case "warp-is"       `Quick test_if_warp_is
-                  ; Alcotest.test_case "warp-id-cond"  `Quick test_if_warp_is_cond_uses_warp_id ];
+                  ; Alcotest.test_case "warp-id-cond"  `Quick test_if_warp_is_cond_uses_role ];
     "seq",        [ Alcotest.test_case "produces-sseq" `Quick test_seq_produces_sseq
                   ; Alcotest.test_case "length"        `Quick test_seq_length ];
     "dispatch",   [ Alcotest.test_case "warp-dispatch" `Quick test_warp_dispatch_produces_sif ];

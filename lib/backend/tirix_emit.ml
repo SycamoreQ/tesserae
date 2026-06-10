@@ -199,30 +199,33 @@ let emit_copy (k: tirix) (c : copy) : string =
       | Some v ->
         Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))" v.var_name
     in
-    let () =
+
+    (*let () =
       match c.stage_var with
       | None ->
           Stdlib.Printf.printf "[DEBUG] TmaLoad stage_var = NONE\n%!"
       | Some v ->
           Stdlib.Printf.printf "[DEBUG] TmaLoad stage_var = %s\n%!"
             v.var_name
-    in
-    Stdlib.Printf.printf
+            in*)
+    (*Stdlib.Printf.printf
       "[DEBUG] coord_k=%s stage=%s\n%!"
       coord_k
       (match c.stage_var with
        | None -> "NONE"
-       | Some v -> v.var_name);
+       | Some v -> v.var_name); *)
 
     let is_b = String.is_substring dst.tensor_name ~substring:"_B" in
     let x_coord, y_coord =
-      if is_b then (coord_k, coord_n)   (* B : row = k, col = n *)
-      else         (coord_m, coord_k)   (* A : row = m, col = k *)
+      if is_b then (coord_k, coord_n)
+      else (coord_m, coord_k)
     in
-    Stdlib.Printf.printf "[DEBUG] TmaLoad dst=%s tma_coord_n=%s coord_k=%s x=%s y=%s\n%!"
+
+    (*Stdlib.Printf.printf "[DEBUG] TmaLoad dst=%s tma_coord_n=%s coord_k=%s x=%s y=%s\n%!"
       dst.tensor_name
       (match c.tma_coord_n with Some _ -> "Some" | None -> "None")
-      coord_k x_coord y_coord;
+      coord_k x_coord y_coord; *)
+
     Printf.sprintf
       "%stma_2d_gmem2smem(__smem_base + offsetof(SharedStorage, %s)%s, \
        %s_tmap, %s, %s, %s);"
@@ -387,7 +390,6 @@ let emit_mma (m : mma_desc) : string =
         | _ -> 16
         in
         let b_modes = Layout.modes b.tensor_layout in
-        (* NEW: extract the actual tile N from B's layout *)
         let b_n = match b_modes with
         | [_; n] -> n
         | [_; _; n] -> n
@@ -395,20 +397,22 @@ let emit_mma (m : mma_desc) : string =
         in
         let k_fragments = a_k / atom_k in
         let elem_bytes = 2 in
-        let a_kfrag_bytes = atom_k * elem_bytes in
-        let b_kfrag_bytes = atom_k * b_n * elem_bytes in
-        (* Add these lines to see the values during compilation *)
         let n_tiles_m = a_m / 64 in
         (* bytes for one m64 sub-tile of A: 64 rows × a_k cols × 2 bytes/F16 *)
         let sub_tile_bytes = 64 * a_k * 2 in
         (* WGMMA descriptor lead = row_stride_in_bytes / 16 *)
         let _a_lead = (a_k * 2) / 16 in
         let _b_lead = (b_n * 2) / 16 in
-        let a_lbo = a_k * 2 in
-        let a_sbo = a_m * a_k * 2 in
-        let b_lbo = b_n * 2 in
-        let b_sbo = a_k * b_n * 2 in
-        Stdlib.Printf.printf
+
+        let a_lbo = a_k * elem_bytes in
+        let a_sbo = 0 in
+        let b_lbo = a_k * elem_bytes in
+        let b_sbo = 0 in
+
+        let a_kfrag_bytes = atom_k * elem_bytes in
+        let b_kfrag_bytes = atom_k * elem_bytes in
+
+        (*Stdlib.Printf.printf
           "[DEBUG]: a_lbo=%d a_sbo=%d b_lbo=%d b_sbo=%d\n"
           a_lbo a_sbo b_lbo b_sbo;
         Stdlib.Printf.printf
@@ -424,7 +428,7 @@ let emit_mma (m : mma_desc) : string =
           "[DEBUG]: atom_k=%d a_k=%d k_fragments=%d\n%!"
           16
           a_k
-          (a_k / 16);
+          (a_k / 16); *)
         (* reg_tokens is identical for every sub-tile asm block because each
            asm volatile restarts its operand numbering from %0 independently. *)
         let reg_tokens =
@@ -489,7 +493,7 @@ let emit_mma (m : mma_desc) : string =
                     b_sbo
                 in
 
-                Stdlib.Printf.printf
+                (*Stdlib.Printf.printf
                   "[DEBUG] tile_m=%d kfrag=%d a_offset=%d b_offset=%d\n%!"
                   tile_m
                   kfrag
@@ -506,7 +510,7 @@ let emit_mma (m : mma_desc) : string =
 
                 Stdlib.Printf.printf
                   "[DEBUG] tile_m=%d kfrag=%d a_offset=%d b_offset=%d\n%!"
-                  tile_m kfrag a_offset b_offset;
+                  tile_m kfrag a_offset b_offset; *)
 
                 let reg_base = tile_m * num_regs in
 
@@ -673,9 +677,9 @@ let rec emit_stmt (k: tirix) ?(depth = 0) ?stage_depth  (s : stmt) : string =
       ind (emit_packed_scalar v.var_type) v.var_name (emit_packed_expr e)
 
   | SAssign (v, e) ->
-    Stdlib.Printf.printf
+    (*Stdlib.Printf.printf
       "[DEBUG]: SAssign %s\n%!"
-      v.var_name;
+      v.var_name; *)
     Printf.sprintf "%s%s = %s;"
       ind v.var_name (emit_packed_expr e)
 
@@ -718,9 +722,9 @@ let rec emit_stmt (k: tirix) ?(depth = 0) ?stage_depth  (s : stmt) : string =
       emit_stmts k ~depth ?stage_depth mainloop;
       Printf.sprintf "%s// pipeline epilogue" ind;
       emit_stmts k ~depth ?stage_depth epilogue;
-      Printf.sprintf "%s// DEBUG stages=%d" ind stages;
-      Printf.sprintf "%s// DEBUG stage_depth=%d"
-        ind
+      (*Printf.sprintf "%s// [DEBUG]: stages=%d" ind stages;*)
+      Printf.sprintf "%s// stage_depth=%d"
+      ind
         (Option.value ~default:(-1) stage_depth);
     ]
   | SWarpGroup (role, body) ->
@@ -910,7 +914,7 @@ let emit_kernel_func (k : tirix) : string =
     let per_thread = (k.bm * k.bn) / 128 in
     let atoms = List.concat_map warp_groups ~f:(fun (_, body) -> collect body) in
     let has90 = List.exists atoms ~f:(function Atom90 _ -> true | _ -> false) in
-    Stdlib.Printf.printf "[DEBUG] sm90_acc_decl: has_atom90=%b per_thread=%d\n%!" has90 per_thread;
+    (*Stdlib.Printf.printf "[DEBUG] sm90_acc_decl: has_atom90=%b per_thread=%d\n%!" has90 per_thread; *)
     if has90 then
       Printf.sprintf
         "    float acc_frag[%d];\n\
@@ -934,12 +938,12 @@ let emit_kernel_func (k : tirix) : string =
       | Cluster.Consumer -> sm90_acc_decl
       | _ -> ""
     in
-    Stdlib.Printf.printf "[DEBUG] warp_case role=%s prefix_len=%d cond=%s\n%!"
+    (*Stdlib.Printf.printf "[DEBUG] warp_case role=%s prefix_len=%d cond=%s\n%!"
       (match role with Cluster.Consumer -> "Consumer" | Cluster.Producer -> "Producer" | _ -> "Other")
       (String.length prefix)
-      cond;
+      cond; *)
 
-    Stdlib.Printf.printf "[DEBUG] warp_groups count=%d\n%!" (List.length warp_groups);
+    (*Stdlib.Printf.printf "[DEBUG] warp_groups count=%d\n%!" (List.length warp_groups); *)
 
     Printf.sprintf "if (%s) {\n%s%s\n}"
       cond prefix (emit_stmts k ~depth:2 ?stage_depth:sd body))
@@ -961,10 +965,8 @@ let emit_kernel_func (k : tirix) : string =
       "extern \"C\" %s__global__ __launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
       \  extern __shared__ char smem_buf[];\n\
       \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
-      \  uint32_t __smem_base_u32;\n\
-      \  asm(\"{ .reg .u64 __stmp; cvta.to.shared.u64 __stmp, %%1; cvt.u32.u64 %%0, __stmp; }\"\n\
-      \      : \"=r\"(__smem_base_u32) : \"l\"((unsigned long long)smem_buf));\n\
-      \  char* __smem_base = (char*)(uintptr_t)__smem_base_u32;\n\
+      \  char* __smem_base = smem_buf;\n\
+      \  uint32_t __smem_base_u32 = (uint32_t)__cvta_generic_to_shared(smem_buf);\n\
       \  (void)smem;\n\
       \  const int warp_id = threadIdx.x / 32;\n\
       \  const int lane_id = threadIdx.x %% 32;\n\
@@ -1131,8 +1133,8 @@ let emit (k : tirix) : Backend_cute.output =
   let full_source = String.concat ~sep:"\n\n"
     [ kernel_source; host_launcher ]
   in
-  Stdlib.Printf.printf "=== Generated kernel: %s ===\n%s\n=== End kernel ===\n%!"
-    k.name full_source;
+  (*Stdlib.Printf.printf "=== Generated kernel: %s ===\n%s\n=== End kernel ===\n%!"
+  k.name full_source; *)
   { Backend_cute.filename = k.name ^ ".cuh"
   ; includes
   ; helpers

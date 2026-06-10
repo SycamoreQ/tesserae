@@ -476,14 +476,7 @@ let construct_epilogue_body
         col_offset = 0;
       });
     ])
-  | Kernel_desc.Hopper ->
-    (* For Hopper/SM90, WGMMA accumulates directly to acc_raw in the consumer.
-       The epilogue just needs to handle storing results, not compute MMA.
-       For now, we skip the epilogue MMA entirely. *)
-    SWarpGroup (Cluster.Epilogue, [
-      (* TODO: Add store to global memory here when ready *)
-      (* For now, just a placeholder - the accumulator is already in acc_frag *)
-    ])
+  | Kernel_desc.Hopper -> SSeq []
   | Kernel_desc.Ampere ->
     (* For Ampere/SM80, the epilogue does the final MMA accumulation *)
     let c = make_global_tensor "C" Elemtype.Float32 in
@@ -549,31 +542,25 @@ let lower (desc : (_, _, _, _, _, _) Kernel_desc.t) : tirix =
     ~f:(fun acc w -> Logic (Or, acc, Cmp (Eq, Var warp_id, i32 w))) in
 
   let warp_dispatch =
-    match sched_warp with
-    | Some sched_id ->
-      (* Blackwell: include scheduler warp *)
-      let is_scheduler = Cmp (Eq, Var warp_id, i32 sched_id) in
-      let scheduler_body = SWarpGroup (Cluster.Scheduler, [SEmpty]) in
-      SIf (is_producer,
-        [ producer ],
-        [ SIf (is_consumer,
-            [ consumer ],
-            [ SIf (is_epilogue,
-                [ epilogue ],
-                [ SIf (is_scheduler,
-                    [ scheduler_body ],
-                    [ SEmpty ])])])])
-    | None ->
-      (* Ampere/Hopper: no scheduler warp *)
-      SIf (is_producer,
-        [ producer ],
-        [ SIf (is_consumer,
-            [ consumer ],
-            [ SIf (is_epilogue,
-                [ epilogue ],
-                [ SEmpty ])])])
+    let base = SSeq [] in  (* fallback: empty *)
+    let with_epilogue =
+      if List.is_empty epi_warps then base
+      else SIf (is_epilogue, [ epilogue ], [ base ])
+    in
+    let with_scheduler =
+      match sched_warp with
+      | Some sched_id ->
+          SIf (Cmp (Eq, Var warp_id, i32 sched_id),
+               [ SWarpGroup (Cluster.Scheduler, [SEmpty]) ],
+               [ with_epilogue ])
+      | None -> with_epilogue
+    in
+    SIf (is_producer,
+         [ producer ],
+         [ SIf (is_consumer,
+                [ consumer ],
+                [ with_scheduler ]) ])
   in
-
   let var_decls = List.map vars ~f:(fun v ->
     let init = match v.var_type with
       | Scalar S32 -> Expr (Const (S32, 0l))

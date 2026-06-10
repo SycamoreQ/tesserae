@@ -31,7 +31,9 @@ let hopper () =
     ~args:[ Kernel_ast.in_arg "A" Kernel_ast.BF16
           ; Kernel_ast.in_arg "B" Kernel_ast.F16
           ; Kernel_ast.out_arg "C" Kernel_ast.F32 ]
-    ~body:(Kernel_ast.Seq [])
+    ~body:( let smem_a = Kernel_ast.Smem ("smem_A", BF16, {m=128; n=0; k=64}) in
+            let arg_a  = Kernel_ast.Arg ("A", BF16, Global) in
+            Kernel_ast.Load (arg_a, smem_a, None))
 
 let blackwell () =
   Kernel_ast.make

@@ -528,10 +528,13 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
         match loop_ctx.k_var with
         | Some kv ->
             Tirix.Arith (Tirix.Arith.Mod,
-              Tirix.Var kv,
+              Tirix.Arith (Tirix.Arith.Div, Tirix.Var kv,
+                Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
               Tirix.Const (Tirix.S32, 2l))
         | None -> Tirix.Const (Tirix.S32, 0l)
+
       in
+
       let wait_full = match ctx.full_mbar with
         | None -> []
         | Some mbar ->
@@ -677,8 +680,13 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   let needs_tma = has_tma_load k.Kernel_ast.arch k.Kernel_ast.body in
   let pipeline_depth = k.Kernel_ast.stages in
 
+  let needs_mbar =
+    match k.Kernel_ast.arch with
+    | Kernel_ast.SM90a | Kernel_ast.SM100a -> pipeline_depth > 0
+    | _ -> false
+  in
   let (full_mbar_var, empty_mbar_var, mbar_tensors) =
-    if needs_tma then
+    if needs_tma || needs_mbar then
       let need_empty = pipeline_depth > 1 in
       ( Some (make_mbar_var "full_mbar")
       , (if need_empty then Some (make_mbar_var "empty_mbar") else None)
