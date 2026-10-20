@@ -4,9 +4,13 @@ type program
 
 let default_flags () = [
   "-I/usr/local/cuda/include"
+; "-I/usr/local/cuda/targets/x86_64-linux/include"
 ; "-I/usr/local/cuda-13.0/targets/x86_64-linux/include/cccl"
 ; "-I/usr/include"
+; "-I/usr/include/x86_64-linux-gnu"
 ; "-I/usr/lib/gcc/x86_64-linux-gnu/13/include"
+; "-I/usr/lib/gcc/x86_64-linux-gnu/12/include"
+; "-I/usr/lib/gcc/x86_64-linux-gnu/11/include"
 ; "-I/tmp/cutlass_latest/include"
 ; "--std=c++17"
 ; "--device-as-default-execution-space"

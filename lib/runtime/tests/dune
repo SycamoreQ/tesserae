@@ -12,5 +12,5 @@
 
 (test
   (name test_runtime)
-  (libraries tesserae alcotest)
+  (libraries tesserae tesserae_test_kernels tesserae_blackwell_kernels alcotest base stdio)
   (link_flags (-cclib -L/usr/local/cuda/lib64 -cclib -lcuda -cclib -lcudart)))

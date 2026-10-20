@@ -28,7 +28,7 @@ app = modal.App("tesserae-gpu-runner")
 
 @app.function(
     image=tesserae_image,
-    gpu="H100",
+    gpu="B200",
     timeout=600,
     env={
         "C_INCLUDE_PATH": "/usr/include:/usr/include/x86_64-linux-gnu:/usr/local/cuda/include",
@@ -40,7 +40,7 @@ app = modal.App("tesserae-gpu-runner")
 def run_tesserae_tests():
     setup_cmd = "eval $(opam env) && cd /workspace && dune build"
 
-    print("Building OCaml project on Linux H100 instance...")
+    print("Building OCaml project on GPU instance...")
     build_result = subprocess.run(setup_cmd, shell=True, capture_output=True, text=True)
 
     if build_result.returncode != 0:

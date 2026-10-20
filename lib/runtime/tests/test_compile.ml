@@ -78,7 +78,6 @@ let test_to_source_duration () =
   Alcotest.(check bool) "duration >= 0" true
     (Float.(r.Compile.duration_ms >= 0.0))
 
-(* --- to_ast Tests --- *)
 
 let test_to_ast_ok () =
   Alcotest.(check bool) "ast ok" true
@@ -89,7 +88,6 @@ let test_to_ast_source_generation () =
   Alcotest.(check string) "name ast" "gemm_ampere" r.Compile.kernel_name;
   Alcotest.(check bool) "source ast non-empty" true (String.length r.Compile.source > 0)
 
-(* --- Content Structure Tests --- *)
 
 let test_source_pragma () =
   let r = get_ok_or_fail (Compile.to_source (ampere ())) in

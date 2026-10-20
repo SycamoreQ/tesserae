@@ -92,7 +92,10 @@ let to_ptx (k : Kernel_ast.kernel) : (result, compile_error) Result.t =
       "--include-path=/usr/include";
       "--include-path=/usr/include/x86_64-linux-gnu";
       "--include-path=/usr/local/cuda/include";
+      "--include-path=/usr/local/cuda/targets/x86_64-linux/include";
       "--include-path=/usr/local/cuda-13.0/targets/x86_64-linux/include/cccl";
+      "--include-path=/usr/lib/gcc/x86_64-linux-gnu/13/include";
+      "--include-path=/usr/lib/gcc/x86_64-linux-gnu/12/include";
       "--include-path=/usr/lib/gcc/x86_64-linux-gnu/11/include";
     ] in
     match Nvrtc.compile_source r.source
