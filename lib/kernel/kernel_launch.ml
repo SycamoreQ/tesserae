@@ -30,6 +30,15 @@ external caml_launch_kernel : nativeint
   -> unit
   = "caml_launch_kernel_bytecode" "caml_launch_kernel"
 
+external caml_launch_kernel_cluster : nativeint
+  -> int -> int -> int
+  -> int -> int -> int
+  -> int
+  -> int -> int -> int
+  -> (nativeint, nativeint_elt, c_layout) Array1.t
+  -> unit
+  = "caml_launch_kernel_cluster_bytecode" "caml_launch_kernel_cluster"
+
 external caml_device_synchronize  : unit -> unit
   = "caml_device_synchronize"
 
@@ -80,14 +89,20 @@ let launch (f : func)
     ~(grid  : int * int * int)
     ~(block : int * int * int)
     ~(smem  : int)
-    ~(args  : nativeint list) : unit =
+    ?(cluster : (int * int * int) option)
+    ~(args  : nativeint list) () : unit =
   let gx, gy, gz = grid in
   let bx, by, bz = block in
   let len = List.length args in
   let arr = Array1.create nativeint c_layout len in
   List.iteri args ~f:(fun i v -> Array1.set arr i v);
-  caml_launch_kernel !(f.handle)
-    gx gy gz bx by bz smem arr
+  match cluster with
+  | None ->
+    caml_launch_kernel !(f.handle)
+      gx gy gz bx by bz smem arr
+  | Some (cx, cy, cz) ->
+    caml_launch_kernel_cluster !(f.handle)
+      gx gy gz bx by bz smem cx cy cz arr
 
 let synchronize () : unit =
   caml_device_synchronize ()

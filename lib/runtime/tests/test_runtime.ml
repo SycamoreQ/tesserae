@@ -48,7 +48,7 @@ let _test_copy_kernel_hopper () =
         ~grid:(1, 1, 1)
         ~block:(256, 1, 1)
         ~smem:smem_bytes
-        ~args:[ tma_a; Gpu_buffer.ptr buf_c ];
+        ~args:[ tma_a; Gpu_buffer.ptr buf_c ] ();
 
       Kernel_launch.synchronize ();
 
@@ -97,7 +97,8 @@ let test_copy_kernel_blackwell () =
         ~grid:(2, 1, 1)
         ~block:(192, 1, 1)
         ~smem:smem_bytes
-        ~args:[ tma_a; Gpu_buffer.ptr buf_c ];
+        ~cluster:(2, 1, 1)
+        ~args:[ tma_a; Gpu_buffer.ptr buf_c ] ();
 
       Kernel_launch.synchronize ();
 
@@ -158,7 +159,7 @@ let _test_gemm_hopper_ws () =
         ~grid:(1, 1, 1)
         ~block:(256, 1, 1)
         ~smem:smem_bytes
-        ~args:[ tma_a; tma_b; Gpu_buffer.ptr buf_c ];
+        ~args:[ tma_a; tma_b; Gpu_buffer.ptr buf_c ] ();
 
       Kernel_launch.synchronize ();
 
@@ -217,7 +218,8 @@ let test_gemm_blackwell_ws () =
         ~grid:(2, 1, 1)
         ~block:(192, 1, 1)
         ~smem:smem_bytes
-        ~args:[ tma_a; tma_b; Gpu_buffer.ptr buf_c ];
+        ~cluster:(2, 1, 1)
+        ~args:[ tma_a; tma_b; Gpu_buffer.ptr buf_c ] ();
 
       Kernel_launch.synchronize ();
 

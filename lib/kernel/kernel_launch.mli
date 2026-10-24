@@ -13,7 +13,9 @@ val launch :
   grid:(int * int * int) ->
   block:(int * int * int) ->
   smem:int ->
+  ?cluster:(int * int * int) ->
   args:nativeint list ->
+  unit ->
   unit
 
 val synchronize : unit -> unit

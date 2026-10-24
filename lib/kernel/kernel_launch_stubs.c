@@ -7,6 +7,7 @@
 #include <caml/bigarray.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CU_CHECK(rc) do { \
   CUresult _rc = (rc); \
@@ -26,6 +27,12 @@
 CAMLprim value caml_launch_kernel(value fn_val, value gx, value gy, value gz,
                                   value bx, value by, value bz, value smem_val,
                                   value args_bigarray);
+
+CAMLprim value caml_launch_kernel_cluster(
+    value fn_val, value gx, value gy, value gz,
+    value bx, value by, value bz, value smem_val,
+    value cx, value cy, value cz,
+    value args_bigarray);
 
 CAMLprim value caml_cuinit(value unit) {
   CAMLparam1(unit);
@@ -221,6 +228,80 @@ CAMLprim value caml_launch_kernel(
     Int_val(gx), Int_val(gy), Int_val(gz),
     Int_val(bx), Int_val(by), Int_val(bz),
     smem, NULL, params, NULL);
+
+  free(params);
+  CU_CHECK(rc);
+  CAMLreturn(Val_unit);
+}
+
+/* bytecode stub for caml_launch_kernel_cluster (12 args needs bytecode wrapper) */
+CAMLprim value caml_launch_kernel_cluster_bytecode(value* argv, int argc) {
+  (void) argc;
+  return caml_launch_kernel_cluster(
+    argv[0], argv[1], argv[2], argv[3],
+    argv[4], argv[5], argv[6], argv[7], argv[8],
+    argv[9], argv[10], argv[11]);
+}
+
+CAMLprim value caml_launch_kernel_cluster(
+    value fn_val, value gx, value gy, value gz,
+    value bx, value by, value bz, value smem_val,
+    value cx, value cy, value cz,
+    value args_bigarray) {
+  CAMLparam5(fn_val, gx, gy, smem_val, args_bigarray);
+  CAMLxparam5(gz, bx, by, bz, cx);
+  CAMLxparam2(cy, cz);
+
+  CUfunction fn = (CUfunction) Nativeint_val(fn_val);
+  int smem = Int_val(smem_val);
+
+  /* Opt into extended shared memory */
+  CUresult attr_rc = cuFuncSetAttribute(fn,
+    CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem);
+  if (attr_rc != CUDA_SUCCESS) {
+    const char* msg;
+    cuGetErrorString(attr_rc, &msg);
+    caml_failwith(msg ? msg : "cuFuncSetAttribute failed");
+  }
+
+  struct caml_ba_array* ba = Caml_ba_array_val(args_bigarray);
+  intnat n = ba->dim[0];
+  intnat* data = (intnat*) ba->data;
+  void** params = (void**) malloc(n * sizeof(void*));
+  for (intnat i = 0; i < n; i++) params[i] = &data[i];
+
+  /* Build the launch config with cluster dimensions */
+  CUlaunchConfig config;
+  memset(&config, 0, sizeof(config));
+  config.gridDimX  = Int_val(gx);
+  config.gridDimY  = Int_val(gy);
+  config.gridDimZ  = Int_val(gz);
+  config.blockDimX = Int_val(bx);
+  config.blockDimY = Int_val(by);
+  config.blockDimZ = Int_val(bz);
+  config.sharedMemBytes = smem;
+  config.hStream = NULL;
+
+  CUlaunchAttribute attrs[2];
+  int nattrs = 0;
+
+  /* Cluster dimension attribute */
+  attrs[nattrs].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
+  attrs[nattrs].value.clusterDim.x = Int_val(cx);
+  attrs[nattrs].value.clusterDim.y = Int_val(cy);
+  attrs[nattrs].value.clusterDim.z = Int_val(cz);
+  nattrs++;
+
+  /* Cluster scheduling policy — spread for better SM utilization */
+  attrs[nattrs].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_SCHEDULING_POLICY_PREFERENCE;
+  attrs[nattrs].value.clusterSchedulingPolicyPreference =
+    CU_CLUSTER_SCHEDULING_POLICY_SPREAD;
+  nattrs++;
+
+  config.attrs = attrs;
+  config.numAttrs = nattrs;
+
+  CUresult rc = cuLaunchKernelEx(&config, fn, params, NULL);
 
   free(params);
   CU_CHECK(rc);

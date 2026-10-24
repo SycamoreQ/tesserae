@@ -35,8 +35,9 @@ val emit_packed_expr : packed_expr -> string
 
 (** {1 GPU Hardware Primitive Emission} *)
 
-val emit_barrier : barrier -> string
-(** [emit_barrier b] generates raw inline PTX or CUDA cooperative group synchronization strings. *)
+val emit_barrier : tirix -> barrier -> string
+(** [emit_barrier k b] generates raw inline PTX or CUDA cooperative group synchronization strings.
+    For Blackwell 2SM clusters, mbarrier operations use cluster scope instead of CTA scope. *)
 
 val emit_copy : tirix -> copy -> string
 (** [emit_copy c] generates data movement primitives (e.g., [cp.async], TMA descriptors, or CuTe copies). *)

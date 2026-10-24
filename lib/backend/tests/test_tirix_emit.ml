@@ -130,27 +130,36 @@ let test_expr_addr_conv () =
 (* emit_barrier                                                        *)
 (* ------------------------------------------------------------------ *)
 
+(* A minimal tirix for barrier emission tests (1SM cluster → cta scope) *)
+let dummy_tirix_for_barrier () =
+  let (Lower.Pack desc) = Lower.lower_exn (hopper_kernel ()) in
+  Desc_to_tirix.lower desc
+
 let test_barrier_cta_sync () =
+  let k = dummy_tirix_for_barrier () in
   Alcotest.(check bool) "__syncthreads" true
     (contains "__syncthreads"
-      (Tirix_emit.emit_barrier Tirix.CtaSync))
+      (Tirix_emit.emit_barrier k Tirix.CtaSync))
 
 let test_barrier_mbar_init () =
+  let k = dummy_tirix_for_barrier () in
   let v = { Tirix.var_name="full_mbar"; var_id=0
           ; var_type=Tirix.Scalar Tirix.U64; var_mutable=false } in
   Alcotest.(check bool) "mbarrier.init" true
     (contains "mbarrier.init"
-      (Tirix_emit.emit_barrier (Tirix.MbarInit { mbar=v; count=1 })))
+      (Tirix_emit.emit_barrier k (Tirix.MbarInit { mbar=v; count=1 })))
 
 let test_barrier_cp_async_wait () =
+  let k = dummy_tirix_for_barrier () in
   Alcotest.(check bool) "cp.async.wait_all" true
     (contains "cp.async.wait_all"
-      (Tirix_emit.emit_barrier Tirix.CpAsyncWaitAll))
+      (Tirix_emit.emit_barrier k Tirix.CpAsyncWaitAll))
 
 let test_barrier_cluster_arrive () =
+  let k = dummy_tirix_for_barrier () in
   Alcotest.(check bool) "cluster arrive" true
     (contains "barrier.cluster.arrive"
-      (Tirix_emit.emit_barrier Tirix.ClusterArrive))
+      (Tirix_emit.emit_barrier k Tirix.ClusterArrive))
 
 
 let test_shared_storage_struct () =

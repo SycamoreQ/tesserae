@@ -102,7 +102,7 @@ let emit_packed_expr (Expr e) = emit_expr e
 
 (* All mbarrier address computations use __smem_base + offsetof to avoid
    NVRTC folding away the cvta.to.shared conversion on smem symbols. *)
-let emit_barrier = function
+let emit_barrier (k : tirix) = function
   | CtaSync ->  "__syncthreads();"
   | WarpSync -> "__syncwarp();"
   | MemFence -> "__threadfence();"
@@ -115,26 +115,37 @@ let emit_barrier = function
       |} mbar.var_name count
 
   | MbarArriveExpect { mbar; bytes } ->
+      (* For Blackwell with 2SM cluster (multicast TMA), the mbarrier arrive
+         must use cluster scope to match the cp.async.bulk...shared::cluster
+         instruction. Otherwise the arrive and TMA completion are tracked in
+         different scopes, causing deadlock. *)
+      let scope =
+        if Cluster.is_2sm k.cluster then "cluster" else "cta"
+      in
       Printf.sprintf {|
         if (threadIdx.x == 0) {
-            asm volatile("mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 _, [%%0], %%1;"
+            asm volatile("mbarrier.arrive.expect_tx.release.%s.shared::cta.b64 _, [%%0], %%1;"
                 :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), "r"(%s) : "memory");
         }
-      |} mbar.var_name (emit_expr bytes)
+      |} scope mbar.var_name (emit_expr bytes)
 
   | MbarWaitParity { mbar; phase } ->
+      (* For Blackwell with 2SM cluster, wait must also use cluster scope *)
+      let scope =
+        if Cluster.is_2sm k.cluster then "cluster" else "cta"
+      in
       Printf.sprintf {|
         asm volatile(
           "{"
           "  .reg .pred p;"
           "  LOOP_START:"
-          "  mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 p, [%%0], %%1, 0x989680;"
+          "  mbarrier.try_wait.parity.acquire.%s.shared::cta.b64 p, [%%0], %%1, 0x989680;"
           "  @!p bra LOOP_START;"
           "}"
           :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))),
              "r"((uint32_t)(%s))
           : "memory");
-      |} mbar.var_name (emit_expr phase)
+      |} scope mbar.var_name (emit_expr phase)
 
   | MbarArrive { mbar } ->
         Printf.sprintf
@@ -331,6 +342,22 @@ let emit_copy (k: tirix) (c : copy) : string =
       (Layout.size src.tensor_layout)
       (Layout.size src.tensor_layout)
 
+
+(* tcgen05 instruction descriptor (32-bit) for kind::f16 / kind::tf32.
+   bits  4-5  : D (accumulator) format   0=F16 1=F32 2=S32
+   bits  7-9  : A format                 f16: 0=F16 1=BF16   tf32: 2=TF32
+   bits 10-12 : B format
+   bit  15/16 : A/B major                0 = K-major
+   bits 17-22 : N >> 3
+   bits 24-28 : M >> 4
+   Accumulator is hard-wired to F32 and both operands to K-major. *)
+let sm100_idesc ~(m : int) ~(n : int) ~(a_fmt : int) ~(b_fmt : int) : int =
+  let c_fmt = 1 in
+  Int.bit_or (Int.shift_left c_fmt 4)
+    (Int.bit_or (Int.shift_left a_fmt 7)
+       (Int.bit_or (Int.shift_left b_fmt 10)
+          (Int.bit_or (Int.shift_left (n / 8) 17)
+             (Int.shift_left (m / 16) 24))))
 
 let emit_mma (m : mma_desc) : string =
   let (Tensor a) = m.tensor_a in
@@ -567,24 +594,62 @@ let emit_mma (m : mma_desc) : string =
              (String.concat ~sep:"\n" sub_tile_strs)
 
   | Sm100Tcgen05 ->
+    let (atom_m, atom_n, kind, a_fmt, b_fmt) =
+      match m.mma_atom with
+      | Atom100 atom ->
+        let (am, an, _ak) = Mma_atom.shape atom in
+        let fmt_of t =
+          match String.lowercase (Mma_atom.elem_string t) with
+          | "f16"  -> ("f16", 0)
+          | "bf16" -> ("f16", 1)
+          | "tf32" -> ("tf32", 2)
+          | other  ->
+            failwith (Printf.sprintf
+              "emit_mma: Sm100Tcgen05 unsupported operand type %s (f16/bf16/tf32 only)" other)
+        in
+        let (ka, fa) = fmt_of atom.Mma_atom.a_type in
+        let (kb, fb) = fmt_of atom.Mma_atom.b_type in
+        if not (String.equal ka kb) then
+          failwith "emit_mma: Sm100Tcgen05 A and B must use the same .kind";
+        (am, an, ka, fa, fb)
+      | _ -> failwith "emit_mma: Sm100Tcgen05 requires Atom100"
+    in
+    if atom_m <> 64 && atom_m <> 128 then
+      failwith (Printf.sprintf "emit_mma: tcgen05 cta_group::1 needs M=64|128, got %d" atom_m);
+    if atom_n % 8 <> 0 || atom_n < 8 || atom_n > 256 then
+      failwith (Printf.sprintf "emit_mma: tcgen05 needs N in 8..256, step 8, got %d" atom_n);
+    let idesc = sm100_idesc ~m:atom_m ~n:atom_n ~a_fmt ~b_fmt in
     let desc_a = match m.smem_desc_a with
-      | None -> Printf.sprintf "make_smem_desc(&smem.%s[stage][0])" a.tensor_name
-      | Some _ -> Printf.sprintf "make_smem_desc(%s)" a.tensor_name
+      | None -> Printf.sprintf "make_sm100_smem_desc(&smem.%s[stage][0])" a.tensor_name
+      | Some _ -> Printf.sprintf "make_sm100_smem_desc(%s)" a.tensor_name
     in
     let desc_b = match m.smem_desc_b with
-      | None -> Printf.sprintf "make_smem_desc(&smem.%s[stage][0])" b.tensor_name
-      | Some _ -> Printf.sprintf "make_smem_desc(%s)" b.tensor_name
+      | None -> Printf.sprintf "make_sm100_smem_desc(&smem.%s[stage][0])" b.tensor_name
+      | Some _ -> Printf.sprintf "make_sm100_smem_desc(%s)" b.tensor_name
     in
-    Printf.sprintf
-      "{\n\
-      \        uint32_t tmem_addr = smem.tmem_addr;\n\
-      \        uint64_t desc_a = %s;\n\
-      \        uint64_t desc_b = %s;\n\
-      \        asm volatile(\"tcgen05.mma.cta_group::1.kind::mxf16 \
-       [%%0], %%1, %%2, %%3;\" \
-       :: \"r\"(tmem_addr), \"l\"(desc_a), \"l\"(desc_b), \"n\"(%d) : \"memory\");\n\
-      \      }"
-      desc_a desc_b accum
+    (* tcgen05.mma.cta_group::1.kind::<k> [d_tmem], a_desc, b_desc, idesc, enable_input_d;
+       - enable_input_d is a .pred, so it goes through setp
+       - a single thread issues the instruction *)
+    String.concat ~sep:"\n" [
+      "{";
+      "  uint32_t tmem_addr = smem.tmem_addr;";
+      Printf.sprintf "  uint64_t desc_a = %s;" desc_a;
+      Printf.sprintf "  uint64_t desc_b = %s;" desc_b;
+      Printf.sprintf "  uint32_t idesc  = 0x%08xu;" idesc;
+      "  if ((threadIdx.x % 32) == 0) {";
+      "    asm volatile(";
+      "      \"{\\n\\t\"";
+      "      \".reg .pred p;\\n\\t\"";
+      "      \"setp.ne.b32 p, %4, 0;\\n\\t\"";
+      Printf.sprintf
+        "      \"tcgen05.mma.cta_group::1.kind::%s [%%0], %%1, %%2, %%3, p;\\n\\t\"" kind;
+      "      \"}\"";
+      Printf.sprintf
+        "      :: \"r\"(tmem_addr), \"l\"(desc_a), \"l\"(desc_b), \"r\"(idesc), \"r\"(%d)" accum;
+      "      : \"memory\");";
+      "  }";
+      "}";
+    ]
 
 
 let rec collect = function
@@ -627,7 +692,7 @@ let emit_tiled_mma_decl (k : tirix) : string =
 let emit_op (k:tirix) = function
   | Copy c -> emit_copy k c
   | Mma  m -> emit_mma m
-  | Barrier b -> emit_barrier b
+  | Barrier b -> emit_barrier k b
   | TmemAlloc { addr_var; col_count } ->
     Printf.sprintf
       "asm volatile(\"tcgen05.alloc.cta_group::1.sync.aligned.\
@@ -643,25 +708,32 @@ let emit_op (k:tirix) = function
       col_count addr_var.var_name
 
   | TmemLoad { dst_vars; src_addr; col_offset } ->
+    (* PTX needs register operands, not C variable names: load into uint32
+       temporaries via "=r" and reinterpret as f32. Assumes f32 accumulators. *)
+    let n = List.length dst_vars in
+    let outs = String.concat ~sep:", "
+      (List.init n ~f:(fun i -> Printf.sprintf "\"=r\"(__t[%d])" i)) in
     let regs = String.concat ~sep:", "
-      (List.map dst_vars ~f:(fun v -> v.var_name))
-    in
+      (List.init n ~f:(fun i -> Printf.sprintf "%%%d" i)) in
+    let copies = String.concat ~sep:" "
+      (List.mapi dst_vars ~f:(fun i v ->
+         Printf.sprintf "%s = __uint_as_float(__t[%d]);" v.var_name i)) in
     Printf.sprintf
-      "asm volatile(\"tcgen05.ld.sync.aligned.32x32b.x%d.b32 \
-       {%s}, [%%0 + %d];\" \
-       :: \"r\"((uint32_t)(%s)) : \"memory\");"
-      (List.length dst_vars) regs col_offset (emit_expr src_addr)
+      "{ uint32_t __t[%d]; asm volatile(\"tcgen05.ld.sync.aligned.32x32b.x%d.b32 {%s}, [%%%d];\" : %s : \"r\"((uint32_t)(%s) + %d) : \"memory\"); %s }"
+      n n regs n outs (emit_expr src_addr) col_offset copies
 
   | TmemCommit { mbar_var; cta_mask } ->
-    let mask_s = match cta_mask with
-      | None -> ""
-      | Some m -> Printf.sprintf ", %d" m
-    in
-    Printf.sprintf
-      "asm volatile(\"tcgen05.commit.cta_group::1.\
-       mbarrier::arrive::one.shared::cluster.b64 [%%0]%s;\" \
-       :: \"r\"(&smem.%s) : \"memory\");"
-      mask_s mbar_var.var_name
+    (* mbarrier operand must be a 32-bit shared address, not a generic pointer *)
+    let mbar = Printf.sprintf "(uint32_t)__cvta_generic_to_shared(&smem.%s)" mbar_var.var_name in
+    (match cta_mask with
+     | None ->
+       Printf.sprintf
+         "asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%%0];\" :: \"r\"(%s) : \"memory\");"
+         mbar
+     | Some mask ->
+       Printf.sprintf
+         "asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%%0], %%1;\" :: \"r\"(%s), \"h\"((uint16_t)%d) : \"memory\");"
+         mbar mask)
 
   | SmemDescInit { desc_var; ptr_expr; leading_dim; stride; swizzle } ->
     let sw_bits = Smem_desc.swizzle_mode_bits (Smem_desc.swizzle_mode_of swizzle) in
@@ -909,6 +981,7 @@ let emit_mbar_init_loop (k : tirix) : string =
           "  if (warp_id == 0) {\n\
           \    asm volatile(\"tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%%0], %d;\"\n\
           \      :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.tmem_addr)) : \"memory\");\n\
+          \    asm volatile(\"tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;\" ::: \"memory\");\n\
           \  }\n"
           k.bn
       else ""
@@ -985,7 +1058,7 @@ let emit_kernel_func (k : tirix) : string =
 
   let tiled_mma_s = emit_tiled_mma_decl k in
   let stage_decl =
-    if tirix_is_tma k then "int stage = 0;\n" else ""
+    if tirix_is_tma k then "int stage = 0;\n  (void)stage;\n" else ""
   in
   let mbar_init_s = emit_mbar_init_loop k in
   let tmem_dealloc_s =
@@ -1136,6 +1209,19 @@ let emit_includes (k : tirix) : string =
     "  desc |= ((uint64_t)(lbo >> 4)) << 16;";
     "  desc |= ((uint64_t)(sbo >> 4)) << 32;";
     "  desc |= ((uint64_t)swizzle)    << 62;";
+    "  return desc;";
+    "}";
+    "";
+    "// SM100 (tcgen05) SMEM matrix descriptor: K-major, 128B swizzle, SBO=1024B.";
+    "// bits 0-13 addr>>4 | 16-29 LBO>>4 | 32-45 SBO>>4 | 46-47 version=1 | 61-63 layout (2=SW128)";
+    "__device__ __forceinline__ uint64_t make_sm100_smem_desc(const void* smem_ptr) {";
+    "  uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem_ptr);";
+    "  uint64_t desc = 0;";
+    "  desc |= (uint64_t)((addr & 0x3FFFFu) >> 4);";
+    "  desc |= (uint64_t)1 << 16;";
+    "  desc |= (uint64_t)(1024 >> 4) << 32;";
+    "  desc |= (uint64_t)1 << 46;";
+    "  desc |= (uint64_t)2 << 61;";
     "  return desc;";
     "}";
     "";

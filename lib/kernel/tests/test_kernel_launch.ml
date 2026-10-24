@@ -69,7 +69,7 @@ let test_launch_trivial () =
     ~block:(256, 1, 1)
     ~smem:0
     ~args:[ Gpu_buffer.ptr buf
-          ; Nativeint.of_int n ];
+          ; Nativeint.of_int n ] ();
 
   Kernel_launch.synchronize ();
 

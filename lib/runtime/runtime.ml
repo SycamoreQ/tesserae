@@ -49,6 +49,10 @@ let run (k : Kernel_ast.kernel) ~m ~n ~k_ ~a ~b =
             ~elem:Elemtype.Float16 ~m ~n ~k:k_ in
           (Kernel_desc.smem_bytes d, Cluster.thread_count d.Kernel_desc.cluster)
       in
+      let cluster_opt = match k.Kernel_ast.arch with
+        | Kernel_ast.SM100a -> Some (2, 1, 1)
+        | _ -> None
+      in
       let dev_a = Gpu_buffer.of_host a in
       let dev_b = Gpu_buffer.of_host b in
       let dev_c = Gpu_buffer.alloc (m * n) in
@@ -88,12 +92,13 @@ let run (k : Kernel_ast.kernel) ~m ~n ~k_ ~a ~b =
                   ~grid:((m + bm - 1) / bm, (n + bn - 1) / bn, 1)
                   ~block:(n_threads, 1, 1)
                   ~smem:smem_allocated
+                  ?cluster:cluster_opt
                   ~args:[ Gpu_buffer.ptr tmap_a
                         ; Gpu_buffer.ptr tmap_b
                         ; Gpu_buffer.ptr dev_c
                         ; Nativeint.of_int m
                         ; Nativeint.of_int n
-                        ; Nativeint.of_int k_ ];
+                        ; Nativeint.of_int k_ ] ();
                 Kernel_launch.synchronize ();
                 Ok ()
               with Failure msg -> Error msg) with
