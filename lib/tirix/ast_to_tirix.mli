@@ -15,6 +15,7 @@ type ctx = {
   elem_bytes : int;
   roles : (int * Tesserae_pipeline.Cluster.warp_role) list;
   cta_count : int;
+  multicast : bool;
 }
 
 (** [lookup_tensor ctx expr] resolves a high-level frontend tensor expression

@@ -11,7 +11,7 @@ let tirix_is_tma (k : tirix) =
 
 (* Stress knob: microseconds the MMA warp sleeps before each stage's MMAs.
    0 = off. Run the K>256 test with a few us to expose pipeline hazards. *)
-let debug_consumer_delay_us = 5
+let debug_consumer_delay_us = 0
 
 let emit_scalar_ty : type a. a scalar_ty -> string = function
   | U8 ->  "uint8_t"
@@ -104,6 +104,24 @@ and emit_addr_conv = function
 let emit_packed_expr (Expr e) = emit_expr e
 
 
+(* Does the kernel use 2-CTA TMA multicast? Decided in the lowering
+   (infer_copy_kind); the emitter only reads it off the IR so the byte counts
+   and barrier counts can never disagree with the copy kind. *)
+let rec stmts_use_multicast (stmts : stmt list) : bool =
+  List.exists stmts ~f:(function
+    | SOp (Copy c) -> (match c.copy_kind with TmaMulticast -> true | _ -> false)
+    | SSeq ss -> stmts_use_multicast ss
+    | SFor { body; _ } -> stmts_use_multicast body
+    | SIf (_, thn, els) -> stmts_use_multicast thn || stmts_use_multicast els
+    | SWarpGroup (_, body) -> stmts_use_multicast body
+    | SPragma (_, body) -> stmts_use_multicast body
+    | SPipeline { prologue; mainloop; epilogue; _ } ->
+      stmts_use_multicast prologue || stmts_use_multicast mainloop
+      || stmts_use_multicast epilogue
+    | _ -> false)
+
+let uses_multicast (k : tirix) : bool = stmts_use_multicast k.body
+
 (* All mbarrier address computations use __smem_base + offsetof to avoid
    NVRTC folding away the cvta.to.shared conversion on smem symbols. *)
 let emit_barrier (k : tirix) = function
@@ -135,7 +153,7 @@ let emit_barrier (k : tirix) = function
         (* With 2SM multicast (mask 0b11) every CTA's barrier receives the bytes of
            its own TMA and of the peer's. Expect both, or the phase can complete
            before the whole tile has landed. *)
-        (if Cluster.is_2sm k.cluster
+        (if uses_multicast k
          then Printf.sprintf "(%s) * 2" (emit_expr bytes)
          else emit_expr bytes)
 
@@ -309,6 +327,16 @@ let emit_copy (k: tirix) (c : copy) : string =
            (List.init n_regs ~f:(fun i -> Printf.sprintf "\"=r\"(_t[%d])" i)) in
          let regs = String.concat ~sep:", "
            (List.init n_regs ~f:(fun i -> Printf.sprintf "%%%d" i)) in
+         (* Ragged shapes: when the kernel has M / N parameters, the C row stride
+            is N and the store is guarded against both edges. The tcgen05.ld
+            below stays UNguarded: it is .sync.aligned, so every lane of the warp
+            must execute it. Only the global stores are conditional. *)
+         let has_param name =
+           List.exists k.params ~f:(fun p -> String.equal p.param_name name) in
+         let ldc_s =
+           if has_param "N" then "N" else Printf.sprintf "(gridDim.y * %d)" k.bn in
+         let row_guard = if has_param "M" then "_grow < M" else "true" in
+         let col_guard = if has_param "N" then "(_gcol + _i) < N" else "true" in
          String.concat ~sep:"\n" [
            "{";
            Printf.sprintf "  const uint32_t _mbar = (uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar));";
@@ -326,13 +354,15 @@ let emit_copy (k: tirix) (c : copy) : string =
              "  asm volatile(\"tcgen05.ld.sync.aligned.32x32b.x%d.b32 {%s}, [%%%d];\" : %s : \"r\"(smem.tmem_addr) : \"memory\");"
              n_regs regs n_regs outs;
            "  asm volatile(\"tcgen05.wait::ld.sync.aligned;\" ::: \"memory\");";
-           Printf.sprintf "  const int _ldc = gridDim.y * %d;" k.bn;
+           Printf.sprintf "  const int _ldc = %s;" ldc_s;
            Printf.sprintf
              "  const int _grow = blockIdx.x * %d + 32 * (warp_id %% 4) + (int)(threadIdx.x %% 32);" k.bm;
            Printf.sprintf "  const int _gcol = blockIdx.y * %d;" k.bn;
-           Printf.sprintf "  for (int _i = 0; _i < %d; _i++) {" n_regs;
-           Printf.sprintf "    %s[(size_t)_grow * _ldc + _gcol + _i] = __uint_as_float(_t[_i]);"
-             dst.tensor_name;
+           Printf.sprintf "  if (%s) {" row_guard;
+           Printf.sprintf "    for (int _i = 0; _i < %d; _i++) {" n_regs;
+           Printf.sprintf "      if (%s) %s[(size_t)_grow * _ldc + _gcol + _i] = __uint_as_float(_t[_i]);"
+             col_guard dst.tensor_name;
+           "    }";
            "  }";
            "}";
          ]
@@ -1070,7 +1100,8 @@ let emit_mbar_init_loop (k : tirix) : string =
       * k.cluster.Cluster.dims.Cluster.y
       * k.cluster.Cluster.dims.Cluster.z in
     let empty_count =
-      (if consumer_count = 0 then 1 else consumer_count) * max 1 cta_count in
+      (if consumer_count = 0 then 1 else consumer_count)
+      * (if uses_multicast k then max 1 cta_count else 1) in
     let empty_init = if has_empty then
       Printf.sprintf
         "      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\n\

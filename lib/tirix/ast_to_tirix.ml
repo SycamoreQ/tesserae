@@ -17,6 +17,10 @@ type ctx = {
   elem_bytes : int;
   roles : (int * Cluster.warp_role) list;
   cta_count : int;
+  (* The single decision point for 2-CTA TMA multicast. When false every CTA
+     loads its own tiles (TmaLoad, no multicast commit). Flip it when the 2-CTA
+     sharing optimisation is implemented. *)
+  multicast : bool;
 }
 
 type loop_ctx = {
@@ -112,7 +116,8 @@ let infer_copy_kind (ctx : ctx)
     (match ctx.arch with
      | Kernel_ast.SM80 -> Tirix.CpAsync
      | Kernel_ast.SM90a -> Tirix.TmaLoad
-     | Kernel_ast.SM100a -> Tirix.TmaMulticast)
+     | Kernel_ast.SM100a ->
+       if ctx.multicast then Tirix.TmaMulticast else Tirix.TmaLoad)
 
   | "shared", "global" -> Tirix.SmemToGlobal
 
@@ -373,6 +378,32 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       | None, _ -> None
     in
 
+    (* Each CTA owns one output tile: with no explicit m/n loop, the tile row
+       of A comes from blockIdx.x and the tile row of B (output column) from
+       blockIdx.y. *)
+    let block_coord builtin strip =
+      Some (Tirix.Arith (Tirix.Arith.Mul, Tirix.Builtin builtin,
+              Tirix.Const (Tirix.S32, Int32.of_int_exn strip)))
+    in
+    let coord_m =
+      match tma_coord_scaled loop_ctx.m_var dst_expr (fun s -> s.Kernel_ast.m) with
+      | Some _ as c -> c
+      | None ->
+        (match dst_expr with
+         | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.m > 0 ->
+           block_coord (Tirix.BlockIdx Tirix.X) shape.Kernel_ast.m
+         | _ -> None)
+    in
+    let coord_n =
+      match tma_coord_scaled loop_ctx.n_var dst_expr (fun s -> s.Kernel_ast.n) with
+      | Some _ as c -> c
+      | None ->
+        (match dst_expr with
+         | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.n > 0 ->
+           block_coord (Tirix.BlockIdx Tirix.Y) shape.Kernel_ast.n
+         | _ -> None)
+    in
+
     let copy_stmt = Tirix.SOp (Tirix.Copy {
         copy_kind = kind
       ; src_tensor = src
@@ -380,8 +411,8 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       ; pred_expr = pred
       ; mbar_var
       ; tma_coord_k = tma_coord_scaled loop_ctx.k_var dst_expr (fun s -> s.Kernel_ast.k)
-      ; tma_coord_m = tma_coord_scaled loop_ctx.m_var dst_expr (fun s -> s.Kernel_ast.m)
-      ; tma_coord_n = tma_coord_scaled loop_ctx.n_var dst_expr (fun s -> s.Kernel_ast.n)
+      ; tma_coord_m = coord_m
+      ; tma_coord_n = coord_n
       ; stage_var = loop_ctx.stage_var
       }) in
 
@@ -495,7 +526,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
        let release = match ctx.empty_mbar with
          | Some empty ->
            let mask =
-             if ctx.cta_count > 1
+             if ctx.multicast && ctx.cta_count > 1
              then Some (Int.shift_left 1 ctx.cta_count - 1)
              else None
            in
@@ -646,6 +677,7 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   ; cta_count =
       cluster.Cluster.dims.Cluster.x * cluster.Cluster.dims.Cluster.y
       * cluster.Cluster.dims.Cluster.z
+  ; multicast = false
   } in
 
   (* __syncthreads() after mbarrier init loop (warp 0 lane 0) so that

@@ -7,7 +7,7 @@ open Kernel_ast
    - Warp 1: Consumer (tcgen05.mma / MMA compute in warpgroup)
 *)
 let gemm_blackwell_ws ?(k_total = 256) () =
-  let k_tiles = k_total / 64 in
+  let k_tiles = (k_total + 63) / 64 in
   Kernel_ast.make
     ~name:"gemm_blackwell_ws"
     ~arch:SM100a
@@ -16,7 +16,9 @@ let gemm_blackwell_ws ?(k_total = 256) () =
     ~stages:4
     ~args:[ ("A", F16, Global, In)
           ; ("B", F16, Global, In)
-          ; ("C", F32, Global, Out) ]
+          ; ("C", F32, Global, Out)
+          ; ("M", S32, Global, In)
+          ; ("N", S32, Global, In)]
     ~body:(
       warp_dispatch [
         (WarpIs 0, [
