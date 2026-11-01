@@ -132,7 +132,7 @@ let make_blackwell
       ; (2, Cluster.Epilogue)
       ; (3, Cluster.Epilogue)
       ; (4, Cluster.Epilogue)
-      ; (5, Cluster.Scheduler) ] in
+      ; (5, Cluster.Epilogue) ] in   (* warps 2..5: warp_id%4 covers all 4 TMEM lane quadrants *)
     let pipeline = Pipeline.make 4
       ((bm + bn) * bk * Elemtype.byte_width elem) in
     let tile_io  = Tile_io.make

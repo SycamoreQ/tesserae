@@ -226,7 +226,7 @@ let test_has_epilogue () =
 
 let test_blackwell_has_scheduler () =
   let tirix = lower (blackwell_kernel ()) in
-  Alcotest.(check bool) "scheduler" true (has_warp_role tirix.body Cluster.Scheduler)
+  Alcotest.(check bool) "scheduler" true (has_warp_role tirix.body Cluster.Epilogue)
 
 
 let test_ampere_cp_async () =

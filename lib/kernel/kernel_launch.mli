@@ -33,3 +33,5 @@ val encode_tensor_map_2d :
 
 val create_tma_descriptor : nativeint -> int -> int -> int -> int -> nativeint
 val free_tma_descriptor   : nativeint -> unit
+
+val create_tma_descriptor_sw128 : nativeint -> int -> int -> int -> int -> nativeint

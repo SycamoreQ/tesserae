@@ -15,6 +15,8 @@ type ctx = {
   bm : int;
   bk : int;
   elem_bytes : int;
+  roles : (int * Cluster.warp_role) list;
+  cta_count : int;
 }
 
 type loop_ctx = {
@@ -22,9 +24,12 @@ type loop_ctx = {
   m_var : var option;
   n_var : var option;
   stage_var : var option;
+  in_warp_group : bool;
 }
 
-let empty_loop_ctx = { k_var = None; m_var = None; n_var = None; stage_var = None }
+let empty_loop_ctx =
+  { k_var = None; m_var = None; n_var = None; stage_var = None
+  ; in_warp_group = false }
 
 type packed_space = Space : 'a Memspace.space -> packed_space
 type packed_elem = Elem : 'a Elemtype.t -> packed_elem
@@ -33,13 +38,6 @@ let fresh_id (ctx : ctx) : int =
   let id = !(ctx.var_counter) in
   ctx.var_counter := id + 1;
   id
-
-let mk_stage_var ctx =
-  { Tirix.var_name = "stage"
-  ; var_id = fresh_id ctx
-  ; var_type = Tirix.Scalar Tirix.S32
-  ; var_mutable = true
-  }
 
 let lower_space = function
   | Kernel_ast.Global -> Space Memspace.Global
@@ -60,6 +58,17 @@ let elem_byte_width = function
   | Kernel_ast.F32 -> 4
   | Kernel_ast.S8 -> 1
   | Kernel_ast.S32 -> 4
+
+(* A shared tile is described by a shape whose row extent is m for A-like
+   operands and n for B-like operands (the other one is 0). *)
+let smem_rows shape =
+  if shape.Kernel_ast.m > 0 then shape.Kernel_ast.m else shape.Kernel_ast.n
+
+let smem_layout shape =
+  let rows = smem_rows shape in
+  Layout.make
+    (Modes.Tuple [Modes.Int rows; Modes.Int shape.Kernel_ast.k])
+    (Modes.Tuple [Modes.Int 1; Modes.Int rows])
 
 let make_tensor name (elem : Kernel_ast.elem) (space : Kernel_ast.space)
     layout swizzle : Tirix.packed_tensor =
@@ -85,28 +94,16 @@ let rec lookup_tensor (ctx : ctx) (expr : Kernel_ast.tensor_expr)
      | None -> make_tensor name elem space flat sw)
 
   | Kernel_ast.Smem (name, elem, shape) ->
-      let m = shape.Kernel_ast.m in
-      let n = shape.Kernel_ast.n in
-      let k = shape.Kernel_ast.k in
-      let layout =
-        if n > 0 then
-          Layout.make
-            (Modes.Tuple [Modes.Int k; Modes.Int n])
-            (Modes.Tuple [Modes.Int 1; Modes.Int k])
-        else
-          Layout.make
-            (Modes.Tuple [Modes.Int m; Modes.Int k])
-            (Modes.Tuple [Modes.Int 1; Modes.Int m])
-      in
-      (match List.find ctx.tensors ~f:(fun (n,_) -> String.equal n name) with
-       | Some (_, t) -> t
-       | None -> make_tensor name elem Kernel_ast.Shared layout sw)
+    let layout = smem_layout shape in
+    (match List.find ctx.tensors ~f:(fun (n,_) -> String.equal n name) with
+     | Some (_, t) -> t
+     | None -> make_tensor name elem Kernel_ast.Shared layout sw)
 
   | Kernel_ast.Tile (inner, _)      -> lookup_tensor ctx inner
 
   | Kernel_ast.LocalTile (inner, _) -> lookup_tensor ctx inner
 
-  let memspace_name (Tirix.Tensor t) = Memspace.name t.tensor_memspace
+let memspace_name (Tirix.Tensor t) = Memspace.name t.tensor_memspace
 
 let infer_copy_kind (ctx : ctx)
     (src : Tirix.packed_tensor) (dst : Tirix.packed_tensor) : Tirix.copy_kind =
@@ -182,43 +179,18 @@ let lower_pred (p : Kernel_ast.pred_expr) : bool Tirix.expr =
 
   | Kernel_ast.Mbarrier _ -> Tirix.Const (Tirix.Bool, true)
 
-let warp_ids_to_role (ctx : ctx) (ids : int list) : Cluster.warp_role =
-  match ctx.arch with
-  | Kernel_ast.SM90a ->
-    (* warps 0-3 = producer warpgroup, warps 4-7 = consumer warpgroup *)
-    if List.exists ids ~f:(fun id -> id >= 4) then Cluster.Consumer
-    else Cluster.Producer
-  | Kernel_ast.SM100a ->
-    (* warp 0 = producer, warp 1 = consumer, 2-4 = epilogue, 5 = scheduler *)
-    if List.exists ids ~f:(fun id -> id = 1) then Cluster.Consumer
-    else if List.exists ids ~f:(fun id -> id >= 2 && id <= 4) then Cluster.Epilogue
-    else if List.exists ids ~f:(fun id -> id = 5) then Cluster.Scheduler
-    else Cluster.Producer
-  | Kernel_ast.SM80 ->
-    (* warp 0 = producer, 1 = consumer, 2-3 = epilogue *)
-    if List.exists ids ~f:(fun id -> id = 1) then Cluster.Consumer
-    else if List.exists ids ~f:(fun id -> id >= 2) then Cluster.Epilogue
-    else Cluster.Producer
-
-let warp_id_to_role (ctx : ctx) (id : int) : Cluster.warp_role =
-  warp_ids_to_role ctx [id]
-
-
 let rec is_tma_source name = function
   | Kernel_ast.Load (Arg (n, _, Global), Smem _, _) when String.equal n name -> true
 
-  | Kernel_ast.For (_, _, _, body) ->
-    List.exists body ~f:(is_tma_source name)
+  | Kernel_ast.For (_, _, _, body) -> List.exists body ~f:(is_tma_source name)
 
-  | Kernel_ast.Seq ss ->
-    List.exists ss ~f:(is_tma_source name)
+  | Kernel_ast.Pipeline (_, body) -> List.exists body ~f:(is_tma_source name)
 
-  | Kernel_ast.If (_, thn, els) ->                        (* add this *)
-    List.exists thn ~f:(is_tma_source name) ||
-    List.exists els ~f:(is_tma_source name)
+  | Kernel_ast.Seq ss -> List.exists ss ~f:(is_tma_source name)
 
-  | Kernel_ast.Pipeline (_, stmts) ->                     (* add this *)
-    List.exists stmts ~f:(is_tma_source name)
+  | Kernel_ast.If (_, thn, els) ->
+    List.exists thn ~f:(is_tma_source name) || List.exists els ~f:(is_tma_source name)
+
   | _ -> false
 
 let lower_params (ctx : ctx) (k : Kernel_ast.kernel) : Tirix.param list =
@@ -256,49 +228,21 @@ let rec collect_tensors (stmt : Kernel_ast.stmt)
         add_unique name (make_tensor name elem space flat sw) tensors
 
       | Kernel_ast.Smem (name, elem, shape) ->
-          let m = shape.Kernel_ast.m in
-          let n = shape.Kernel_ast.n in
-          let k = shape.Kernel_ast.k in
-          let layout =
-            if n > 0 then
-              (* B is K×N, row-major *)
-              Layout.make
-                (Modes.Tuple [Modes.Int k; Modes.Int n])
-                (Modes.Tuple [Modes.Int 1; Modes.Int k])
-            else
-              (* A is M×K, col-major *)
-              Layout.make
-                (Modes.Tuple [Modes.Int m; Modes.Int k])
-                (Modes.Tuple [Modes.Int 1; Modes.Int m])
-          in
-        add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
+        add_unique name
+          (make_tensor name elem Kernel_ast.Shared (smem_layout shape) sw) tensors
 
       | _ -> tensors
-
     in
-
     let tensors = match dst with
-          | Kernel_ast.Arg (name, elem, space) ->
-            add_unique name (make_tensor name elem space flat sw) tensors
+      | Kernel_ast.Arg (name, elem, space) ->
+        add_unique name (make_tensor name elem space flat sw) tensors
 
-          | Kernel_ast.Smem (name, elem, shape) ->
-            let m = shape.Kernel_ast.m in
-            let n = shape.Kernel_ast.n in
-            let k = shape.Kernel_ast.k in
-            let layout =
-              if n > 0 then
-                Layout.make
-                  (Modes.Tuple [Modes.Int k; Modes.Int n])
-                  (Modes.Tuple [Modes.Int 1; Modes.Int k])
-              else
-                Layout.make
-                  (Modes.Tuple [Modes.Int m; Modes.Int k])
-                  (Modes.Tuple [Modes.Int 1; Modes.Int m])
-            in
-            add_unique name (make_tensor name elem Kernel_ast.Shared layout sw) tensors
+      | Kernel_ast.Smem (name, elem, shape) ->
+        add_unique name
+          (make_tensor name elem Kernel_ast.Shared (smem_layout shape) sw) tensors
 
-          | _ -> tensors
-        in
+      | _ -> tensors
+    in
     tensors
 
   | Kernel_ast.Mma (a, b, c) ->
@@ -308,21 +252,8 @@ let rec collect_tensors (stmt : Kernel_ast.stmt)
         (name, make_tensor name elem space flat sw) :: acc
 
       | Kernel_ast.Smem (name, elem, shape)
-              when not (List.exists acc ~f:(fun (n,_) -> String.equal n name)) ->
-              let m = shape.Kernel_ast.m in
-              let n = shape.Kernel_ast.n in
-              let k = shape.Kernel_ast.k in
-              let layout =
-                if n > 0 then
-                  Layout.make
-                    (Modes.Tuple [Modes.Int k; Modes.Int n])
-                    (Modes.Tuple [Modes.Int 1; Modes.Int k])
-                else
-                  Layout.make
-                    (Modes.Tuple [Modes.Int m; Modes.Int k])
-                    (Modes.Tuple [Modes.Int 1; Modes.Int m])
-              in
-              (name, make_tensor name elem Kernel_ast.Shared layout sw) :: acc
+        when not (List.exists acc ~f:(fun (n,_) -> String.equal n name)) ->
+        (name, make_tensor name elem Kernel_ast.Shared (smem_layout shape) sw) :: acc
 
       | _ -> acc
     in
@@ -382,6 +313,21 @@ let make_mbar_var name : Tirix.var =
   { Tirix.var_name = name; var_id = 0
   ; var_type = Tirix.Scalar Tirix.U64; var_mutable = false }
 
+(* If a warp predicate selects warps that all share one role, return it. *)
+let group_role_of_pred (ctx : ctx) (pred : Kernel_ast.pred_expr)
+    : Cluster.warp_role option =
+  let role_of n = List.Assoc.find ctx.roles n ~equal:Int.equal in
+  match pred with
+  | Kernel_ast.WarpIs n -> role_of n
+  | Kernel_ast.WarpIn (n :: rest) ->
+    (match role_of n with
+     | Some r
+       when List.for_all rest ~f:(fun m ->
+              match role_of m with
+              | Some r' -> Poly.equal r r'
+              | None -> false) -> Some r
+     | _ -> None)
+  | _ -> None
 
 
 let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
@@ -405,34 +351,19 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       | Some mbar ->
         let bytes = match dst_expr with
           | Kernel_ast.Smem (_, _, shape) ->
-            let total =
-              if shape.Kernel_ast.n > 0 then
-                shape.Kernel_ast.k * shape.Kernel_ast.n
-              else
-                shape.Kernel_ast.m * shape.Kernel_ast.k
-            in
-            total * ctx.elem_bytes
+            smem_rows shape * shape.Kernel_ast.k * ctx.elem_bytes
+
           | _ -> ctx.bm * ctx.bk * ctx.elem_bytes
         in
-
         [ Tirix.SOp (Tirix.Barrier (Tirix.MbarArriveExpect {
             mbar
           ; bytes = Tirix.Const (Tirix.S32, Int32.of_int_exn bytes)
-          })) ]
+          })) ]   (* TMA load already performs an implicit arrive *)
     in
-
     let tma_coord_scaled var_opt tensor_expr dim_f =
       match var_opt, tensor_expr with
       | Some v, Kernel_ast.Smem (_, _, shape) ->
         let strip = dim_f shape in
-        Stdlib.Printf.printf
-          "[LOWERING][TMA] var=%s strip=%d shape=(m=%d n=%d k=%d)\n%!"
-          v.var_name
-          strip
-          shape.Kernel_ast.m
-          shape.Kernel_ast.n
-          shape.Kernel_ast.k;
-
         if strip > 0 then
           Some (Tirix.Arith (Tirix.Arith.Mul, Tirix.Var v,
             Tirix.Const (Tirix.S32, Int32.of_int_exn strip)))
@@ -441,7 +372,6 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       | Some v, _ -> Some (Tirix.Var v)
       | None, _ -> None
     in
-
 
     let copy_stmt = Tirix.SOp (Tirix.Copy {
         copy_kind = kind
@@ -455,7 +385,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
       ; stage_var = loop_ctx.stage_var
       }) in
 
-    let _phase_expr =
+    let phase_expr =
       match loop_ctx.k_var with
       | Some kv ->
           Tirix.Arith (Tirix.Arith.Mod, Tirix.Var kv,
@@ -464,9 +394,35 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
 
     in
 
-    let wait_stmts = [] in
+    (* Inside a warp group the producer must NOT wait for its own TMA or
+       __syncthreads(): the other warps never reach it. The consumer waits on
+       the full barrier before its MMA (see the Mma case). *)
+    let wait_stmts = match mbar_var with
+      | Some mbar when not loop_ctx.in_warp_group ->
+        [ Tirix.SOp (Tirix.Barrier (Tirix.MbarWaitParity {
+            mbar; phase = phase_expr }))
+        ; Tirix.SOp (Tirix.Barrier Tirix.CtaSync) ]
+      | _ -> []
+    in
 
-    (match arrive_stmts @ [copy_stmt] @ wait_stmts with
+    (* Warp-specialised producer: before refilling stage k % depth, wait until
+       the consumers released it. Round r = k / depth needs the (r-1)th release,
+       i.e. parity (r + 1) % 2. Round 0 passes immediately on a fresh barrier. *)
+    let empty_wait = match ctx.empty_mbar, loop_ctx.k_var with
+      | Some empty, Some kv when is_tma && loop_ctx.in_warp_group ->
+        let phase =
+          Tirix.Arith (Tirix.Arith.Mod,
+            Tirix.Arith (Tirix.Arith.Add,
+              Tirix.Arith (Tirix.Arith.Div, Tirix.Var kv,
+                Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
+              Tirix.Const (Tirix.S32, 1l)),
+            Tirix.Const (Tirix.S32, 2l))
+        in
+        [ Tirix.SOp (Tirix.Barrier (Tirix.MbarWaitParity { mbar = empty; phase })) ]
+      | _ -> []
+    in
+
+    (match empty_wait @ arrive_stmts @ [copy_stmt] @ wait_stmts with
      | [s] -> s
      | many -> Tirix.SSeq many)
 
@@ -511,138 +467,103 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
      | many -> Tirix.SSeq many)
 
   | Kernel_ast.Mma (a_expr, b_expr, c_expr) ->
-      let kind = infer_mma_kind ctx in
-      let mma_op = Tirix.SOp (Tirix.Mma {
-        mma_kind = kind
-        ; mma_atom = Tirix.default_atom_for_kind kind
-        ; tensor_a = lookup_tensor ctx a_expr
-        ; tensor_b = lookup_tensor ctx b_expr
-        ; tensor_c = lookup_tensor ctx c_expr
-        ; smem_desc_a = None
-        ; smem_desc_b = None
-        ; accum_flag = true
-      }) in
-      (* consumer must wait for producer TMA before WGMMA *)
-      (* Corrected wait_phase inside Kernel_ast.Mma *)
-      let wait_phase =
-        match loop_ctx.k_var with
-        | Some kv ->
-            Tirix.Arith (Tirix.Arith.Mod,
-              Tirix.Arith (Tirix.Arith.Div, Tirix.Var kv,
-                Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
-              Tirix.Const (Tirix.S32, 2l))
-        | None -> Tirix.Const (Tirix.S32, 0l)
-
-      in
-
-      let wait_full = match ctx.full_mbar with
-        | None -> []
-        | Some mbar ->
-            [ Tirix.SOp (Tirix.Barrier (Tirix.MbarWaitParity {
-                mbar; phase = wait_phase })) ]
-      in
-      Tirix.SSeq (wait_full @ [mma_op])
-
+    let kind = infer_mma_kind ctx in
+    let mma_stmt = Tirix.SOp (Tirix.Mma {
+      mma_kind    = kind
+    ; mma_atom    = Tirix.default_atom_for_kind kind
+    ; tensor_a    = lookup_tensor ctx a_expr
+    ; tensor_b    = lookup_tensor ctx b_expr
+    ; tensor_c    = lookup_tensor ctx c_expr
+    ; smem_desc_a = None
+    ; smem_desc_b = None
+    ; accum_flag  = true
+    }) in
+    (* Warp-specialised consumer: wait until the producer's TMA for this stage
+       has landed. Phase flips every pipeline_depth iterations. The emitter
+       addresses full_mbar[stage]. *)
+    (match ctx.full_mbar, loop_ctx.k_var, loop_ctx.stage_var with
+     | Some mbar, Some kv, Some _ when loop_ctx.in_warp_group ->
+       let phase =
+         Tirix.Arith (Tirix.Arith.Mod,
+           Tirix.Arith (Tirix.Arith.Div, Tirix.Var kv,
+             Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
+           Tirix.Const (Tirix.S32, 2l))
+       in
+       (* tcgen05.commit arrives when all prior MMAs of this thread completed,
+          so the stage is only released after the hardware is done reading it.
+          Multicast to every CTA: each CTA's producer also writes into its peer. *)
+       let release = match ctx.empty_mbar with
+         | Some empty ->
+           let mask =
+             if ctx.cta_count > 1
+             then Some (Int.shift_left 1 ctx.cta_count - 1)
+             else None
+           in
+           [ Tirix.SOp (Tirix.TmemCommit { mbar_var = empty; cta_mask = mask }) ]
+         | None -> []
+       in
+       Tirix.SSeq
+         ([ Tirix.SOp (Tirix.Barrier (Tirix.MbarWaitParity { mbar; phase }))
+          ; mma_stmt ] @ release)
+     | _ -> mma_stmt)
 
   | Kernel_ast.For (var_name, start_val, stop_val, body_stmts) ->
-
-      let loop_var = {
-        Tirix.var_name = var_name;
-        var_id = fresh_id ctx;
-        var_type = Tirix.Scalar Tirix.S32;
-        var_mutable = true;
-      } in
-
-      let new_loop_ctx =
-        match var_name with
-        | "k" | "k_loop" | "k_tile" ->
-            let stage_var = mk_stage_var ctx in
-            { loop_ctx with
-                k_var = Some loop_var;
-                stage_var = Some stage_var;
-            }
-
-        | "m" | "row" | "block_m" ->
-            { loop_ctx with m_var = Some loop_var }
-
-        | "n" | "col" | "block_n" ->
-            { loop_ctx with n_var = Some loop_var }
-
-        | "stage" | "s" ->
-            { loop_ctx with stage_var = Some loop_var }
-
-        | _ ->
-            loop_ctx
-      in
-
-      let _atom_k = 16 in
-
-      let stage_decl =
-        match new_loop_ctx.stage_var with
-        | Some sv ->
-            Some (
-              Tirix.SLetMut (
-                sv,
-                Expr (Tirix.Const (Tirix.S32, 0l))
-              )
-            )
-        | None ->
-            None
-      in
-
-      let stage_assign =
-        match new_loop_ctx.k_var, new_loop_ctx.stage_var with
-        | Some kv, Some sv ->
-            Some (
-              Tirix.SAssign (
-                sv,
-                Expr (
-                  Tirix.Arith (
-                    Tirix.Arith.Mod,
-                    Tirix.Var kv,
-                    Tirix.Const (
-                      Tirix.S32,
-                      Int32.of_int_exn ctx.pipeline_depth
-                    )
-                  )
-                )
-              )
-            )
-        | _ ->
-            None
-      in
-
-      let lowered_body =
-        List.map body_stmts ~f:(convert_stmt ctx new_loop_ctx)
-      in
-
-      let lowered_body =
-        match stage_assign with
-        | Some s -> s :: lowered_body
-        | None -> lowered_body
-      in
-
-      let for_stmt =
-        Tirix.SFor {
-          var = loop_var;
-          start = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val);
-          stop = Tirix.Const (Tirix.S32, Int32.of_int_exn stop_val);
-          step = Tirix.Const (Tirix.S32, 1l);
-          dir = Tirix.Upto;
-          unroll = false;
-          body = lowered_body;
-        }
-      in
-
-      begin
-        match stage_decl with
-        | Some decl ->
-            Tirix.SSeq [ decl; for_stmt ]
-
-        | None ->
-            for_stmt
-      end
-
+    let loop_var = {
+      Tirix.var_name  = var_name
+    ; var_id          = fresh_id ctx
+    ; var_type        = Tirix.Scalar Tirix.S32
+    ; var_mutable     = true
+    } in
+    let is_k_loop = match var_name with
+      | "k" | "k_loop" | "k_tile" -> true
+      | _ -> false
+    in
+    (* Pipeline stage counter for K loops of warp-specialised TMA kernels:
+         int32_t stage = 0;  for (k ...) { stage = k % depth; ... } *)
+    let stage_opt =
+      if is_k_loop && loop_ctx.in_warp_group
+         && Option.is_some ctx.full_mbar && ctx.pipeline_depth > 1
+      then
+        Some { Tirix.var_name = "stage"
+             ; var_id = fresh_id ctx
+             ; var_type = Tirix.Scalar Tirix.S32
+             ; var_mutable = true }
+      else None
+    in
+    let new_loop_ctx = match var_name with
+      | "k" | "k_loop" | "k_tile"  ->
+        { loop_ctx with
+          k_var = Some loop_var
+        ; stage_var = (match stage_opt with
+                       | Some _ -> stage_opt
+                       | None -> loop_ctx.stage_var) }
+      | "m" | "row"   | "block_m"  -> { loop_ctx with m_var = Some loop_var }
+      | "n" | "col"   | "block_n"  -> { loop_ctx with n_var = Some loop_var }
+      | "stage" | "s"              -> { loop_ctx with stage_var = Some loop_var }
+      | _                          -> loop_ctx
+    in
+    let stage_assign = match stage_opt with
+      | None -> []
+      | Some sv ->
+        [ Tirix.SAssign (sv,
+            Tirix.Expr (Tirix.Arith (Tirix.Arith.Mod, Tirix.Var loop_var,
+              Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)))) ]
+    in
+    let loop = Tirix.SFor {
+      var = loop_var
+    ; start = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val)
+    ; stop = Tirix.Const (Tirix.S32, Int32.of_int_exn stop_val)
+    ; step = Tirix.Const (Tirix.S32, 1l)
+    ; dir = Tirix.Upto
+    ; unroll = false
+    ; body = stage_assign @ List.map body_stmts ~f:(convert_stmt ctx new_loop_ctx)
+    } in
+    (match stage_opt with
+     | None -> loop
+     | Some sv ->
+       Tirix.SSeq
+         [ Tirix.SLetMut (sv, Tirix.Expr (Tirix.Const (Tirix.S32, 0l)))
+         ; loop ])
 
   | Kernel_ast.Pipeline (desc, stmts) ->
     Tirix.SPipeline {
@@ -656,16 +577,15 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     Tirix.SOp (Tirix.Barrier (lower_barrier b))
 
   | Kernel_ast.If (pred, thn, els) ->
-    (match pred with
-     | Kernel_ast.WarpIs n ->
-       let role = warp_id_to_role ctx n in
-       Tirix.SWarpGroup (role,
-         List.map thn ~f:(convert_stmt ctx loop_ctx))
-     | Kernel_ast.WarpIn ns ->
-       let role = warp_ids_to_role ctx ns in
-       Tirix.SWarpGroup (role,
-         List.map thn ~f:(convert_stmt ctx loop_ctx))
-     | _ ->
+    (match group_role_of_pred ctx pred with
+     | Some role ->
+       (* warp_dispatch branch: becomes a warp group of that role *)
+       Tirix.SSeq
+         (Tirix.SWarpGroup
+            (role, List.map thn
+               ~f:(convert_stmt ctx { loop_ctx with in_warp_group = true }))
+          :: List.map els ~f:(convert_stmt ctx loop_ctx))
+     | None ->
        Tirix.SIf (
          lower_pred pred,
          List.map thn ~f:(convert_stmt ctx loop_ctx),
@@ -680,13 +600,8 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   let needs_tma = has_tma_load k.Kernel_ast.arch k.Kernel_ast.body in
   let pipeline_depth = k.Kernel_ast.stages in
 
-  let needs_mbar =
-    match k.Kernel_ast.arch with
-    | Kernel_ast.SM90a | Kernel_ast.SM100a -> pipeline_depth > 0
-    | _ -> false
-  in
   let (full_mbar_var, empty_mbar_var, mbar_tensors) =
-    if needs_tma || needs_mbar then
+    if needs_tma then
       let need_empty = pipeline_depth > 1 in
       ( Some (make_mbar_var "full_mbar")
       , (if need_empty then Some (make_mbar_var "empty_mbar") else None)
@@ -695,6 +610,26 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
                ~f:(fun (n, _) -> String.equal n "full_mbar") )
     else
       (None, None, [])
+  in
+
+  (* Warp roles / cluster are needed while lowering the body (warp groups). *)
+  let cluster = match k.Kernel_ast.arch with
+    | Kernel_ast.SM80 ->
+      Cluster.make { Cluster.x=1; y=1; z=1 } 4
+        [ (0, Cluster.Producer); (1, Cluster.Consumer)
+        ; (2, Cluster.Epilogue); (3, Cluster.Epilogue) ]
+    | Kernel_ast.SM90a ->
+      Cluster.make { Cluster.x=1; y=1; z=1 } 8
+        [ (0, Cluster.Producer); (1, Cluster.Consumer)
+        ; (2, Cluster.Consumer); (3, Cluster.Consumer)
+        ; (4, Cluster.Consumer); (5, Cluster.Epilogue)
+        ; (6, Cluster.Epilogue); (7, Cluster.Epilogue) ]
+    | Kernel_ast.SM100a ->
+      (* warps 2..5: warp_id % 4 covers all four TMEM lane quadrants *)
+      Cluster.make { Cluster.x=2; y=1; z=1 } 6
+        [ (0, Cluster.Producer); (1, Cluster.Consumer)
+        ; (2, Cluster.Epilogue); (3, Cluster.Epilogue)
+        ; (4, Cluster.Epilogue); (5, Cluster.Epilogue) ]
   in
 
   let ctx = {
@@ -707,6 +642,10 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   ; bm = k.Kernel_ast.tile.Kernel_ast.m
   ; bk = k.Kernel_ast.tile.Kernel_ast.k
   ; elem_bytes = elem_byte_width k.Kernel_ast.elem
+  ; roles = cluster.Cluster.warp_roles
+  ; cta_count =
+      cluster.Cluster.dims.Cluster.x * cluster.Cluster.dims.Cluster.y
+      * cluster.Cluster.dims.Cluster.z
   } in
 
   (* __syncthreads() after mbarrier init loop (warp 0 lane 0) so that
@@ -715,65 +654,19 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
     if needs_tma then [ Tirix.SOp (Tirix.Barrier Tirix.CtaSync) ]
     else []
   in
-  (* compute smem_bytes from the collected tensors *)
-  let mbar_names = ["full_mbar"; "empty_mbar"] in
-  let data_bytes =
-    List.sum (module Int) ctx.tensors ~f:(fun (name, Tensor t) ->
-      if List.mem mbar_names name ~equal:String.equal then 0
-      else match t.tensor_memspace with
-      | Memspace.Shared ->
-        let elem_size = match t.tensor_elem_type with
-          | Elemtype.Float16 | Elemtype.Bfloat16 -> 2
-          | Elemtype.Float32 | Elemtype.Int32  -> 4
-          | Elemtype.Int8 -> 1
-        in
-        let per_stage = Layout.size t.tensor_layout in
-        (* pipelined TMA kernels use smem_X[pipeline_depth][per_stage] *)
-        let stages = if needs_tma && pipeline_depth > 1
-                     then pipeline_depth else 1 in
-        stages * per_stage * elem_size
-      | _ -> 0)
-  in
-  let mbar_bytes =
-    if needs_tma then
-      let n_arrays = if pipeline_depth > 1 then 2 else 1 in
-      n_arrays * pipeline_depth * 8  (* uint64_t = 8 bytes *)
-    else 0
-  in
 
   let body_stmt = convert_stmt ctx empty_loop_ctx k.Kernel_ast.body in
 
-  let cluster = match k.Kernel_ast.arch with
-    | Kernel_ast.SM80 ->
-      Cluster.make { Cluster.x=1; y=1; z=1 } 4
-        [ (0, Cluster.Producer); (1, Cluster.Consumer)
-        ; (2, Cluster.Epilogue); (3, Cluster.Epilogue) ]
-    | Kernel_ast.SM90a ->
-      Cluster.make { Cluster.x=1; y=1; z=1 } 8
-        [ (0, Cluster.Producer)
-        ; (1, Cluster.Producer)
-        ; (2, Cluster.Producer)
-        ; (3, Cluster.Producer)
-        ; (4, Cluster.Consumer)
-        ; (5, Cluster.Consumer)
-        ; (6, Cluster.Consumer)
-        ; (7, Cluster.Consumer) ]
-    | Kernel_ast.SM100a ->
-      Cluster.make { Cluster.x=2; y=1; z=1 } 6
-        [ (0, Cluster.Producer); (1, Cluster.Consumer)
-        ; (2, Cluster.Epilogue); (3, Cluster.Epilogue)
-        ; (4, Cluster.Epilogue); (5, Cluster.Scheduler) ]
-  in
-  { Tirix.name = k.Kernel_ast.name
-  ; family = lower_family k.Kernel_ast.arch
-  ; params = lower_params ctx k
-  ; tensors = ctx.tensors
-  ; smem_bytes = data_bytes + mbar_bytes
+  { Tirix.name           = k.Kernel_ast.name
+  ; family               = lower_family k.Kernel_ast.arch
+  ; params               = lower_params ctx k
+  ; tensors              = ctx.tensors
+  ; smem_bytes           = 0
   ; pipeline_depth
-  ; bm = k.Kernel_ast.tile.Kernel_ast.m
-  ; bn = k.Kernel_ast.tile.Kernel_ast.n
-  ; bk = k.Kernel_ast.tile.Kernel_ast.k
+  ; bm                   = k.Kernel_ast.tile.Kernel_ast.m
+  ; bn                   = k.Kernel_ast.tile.Kernel_ast.n
+  ; bk                   = k.Kernel_ast.tile.Kernel_ast.k
   ; cluster
-  ; body = sync_after_init @ [ body_stmt ]
-  ; helpers = []
+  ; body                 = sync_after_init @ [ body_stmt ]
+  ; helpers              = []
   }

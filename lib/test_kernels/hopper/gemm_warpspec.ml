@@ -35,7 +35,7 @@ This gives a coalesced column‑major store (each warp writes 32 consecutive flo
 
 Swizzle = 0:
 no swizzling, which avoids padding complexities but leaves performance on the table.
-Later you can increase swizzle and adjust sbo accordingly.
+Later it can increase swizzle and adjust sbo accordingly.
 
 Single producer warp:
 the kernel is lightly loaded; for larger tiles you would use a full producer warpgroup (warps 0–3) to hide latency.

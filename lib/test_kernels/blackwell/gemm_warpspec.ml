@@ -6,7 +6,8 @@ open Kernel_ast
    - Warp 0: Producer (TMA Multicast loads A & B tiles into shared memory)
    - Warp 1: Consumer (tcgen05.mma / MMA compute in warpgroup)
 *)
-let gemm_blackwell_ws () =
+let gemm_blackwell_ws ?(k_total = 256) () =
+  let k_tiles = k_total / 64 in
   Kernel_ast.make
     ~name:"gemm_blackwell_ws"
     ~arch:SM100a
@@ -19,7 +20,7 @@ let gemm_blackwell_ws () =
     ~body:(
       warp_dispatch [
         (WarpIs 0, [
-          For ("k_tile", 0, 4, [
+          For ("k_tile", 0, k_tiles, [
             load ~src:(Arg ("A", F16, Global))
                  ~dst:(Smem ("smem_A", F16, { m = 128; n = 0; k = 64 })) ();
             load ~src:(Arg ("B", F16, Global))
@@ -27,7 +28,7 @@ let gemm_blackwell_ws () =
           ])
         ]);
         (WarpIs 1, [
-          For ("k", 0, 4, [
+          For ("k", 0, k_tiles, [
             mma
               (Smem ("smem_A", F16, { m = 128; n = 0; k = 64 }))
               (Smem ("smem_B", F16, { m = 0; n = 128; k = 64 }))

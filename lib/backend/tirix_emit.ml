@@ -9,6 +9,10 @@ open Tesserae_atoms
 let tirix_is_tma (k : tirix) =
   List.exists k.params ~f:(fun p -> p.param_is_tma)
 
+(* Stress knob: microseconds the MMA warp sleeps before each stage's MMAs.
+   0 = off. Run the K>256 test with a few us to expose pipeline hazards. *)
+let debug_consumer_delay_us = 5
+
 let emit_scalar_ty : type a. a scalar_ty -> string = function
   | U8 ->  "uint8_t"
   | U32 -> "uint32_t"
@@ -127,7 +131,13 @@ let emit_barrier (k : tirix) = function
             asm volatile("mbarrier.arrive.expect_tx.release.%s.shared::cta.b64 _, [%%0], %%1;"
                 :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), "r"(%s) : "memory");
         }
-      |} scope mbar.var_name (emit_expr bytes)
+      |} scope mbar.var_name
+        (* With 2SM multicast (mask 0b11) every CTA's barrier receives the bytes of
+           its own TMA and of the peer's. Expect both, or the phase can complete
+           before the whole tile has landed. *)
+        (if Cluster.is_2sm k.cluster
+         then Printf.sprintf "(%s) * 2" (emit_expr bytes)
+         else emit_expr bytes)
 
   | MbarWaitParity { mbar; phase } ->
       (* For Blackwell with 2SM cluster, wait must also use cluster scope *)
@@ -228,8 +238,10 @@ let emit_copy (k: tirix) (c : copy) : string =
 
     let is_b = String.is_substring dst.tensor_name ~substring:"_B" in
     let x_coord, y_coord =
+      (* cp.async.bulk.tensor coords are {x = innermost/column, y = row}.
+         Both operands are K-major: A is [m][k] -> x=k, y=m;  B is [n][k] -> x=k, y=n. *)
       if is_b then (coord_k, coord_n)
-      else (coord_m, coord_k)
+      else (coord_k, coord_m)
     in
 
     (*Stdlib.Printf.printf "[DEBUG] TmaLoad dst=%s tma_coord_n=%s coord_k=%s x=%s y=%s\n%!"
@@ -257,8 +269,10 @@ let emit_copy (k: tirix) (c : copy) : string =
     in
     let is_b = String.is_substring dst.tensor_name ~substring:"_B" in
     let x_coord, y_coord =
+      (* cp.async.bulk.tensor coords are {x = innermost/column, y = row}.
+         Both operands are K-major: A is [m][k] -> x=k, y=m;  B is [n][k] -> x=k, y=n. *)
       if is_b then (coord_k, coord_n)
-      else (coord_m, coord_k)
+      else (coord_k, coord_m)
     in
     let stage_off = match c.stage_var with
       | Some v -> Printf.sprintf " + (%s * (sizeof(smem.%s[0])))" v.var_name dst.tensor_name
@@ -280,6 +294,48 @@ let emit_copy (k: tirix) (c : copy) : string =
         else src.tensor_name
       in
       (match dst.tensor_memspace with
+       | Memspace.Global when Poly.(k.family = Kernel_desc.Blackwell)
+                             && String.equal src.tensor_name "acc" ->
+         (* EPILOGUE side only. The MMA warp signals mma_done_mbar (see
+            emit_mma_done_signal); every thread of each epilogue warp then waits
+            (phase 0) -> fence -> tcgen05.ld -> wait::ld -> convert and store.
+            Each warp can only read TMEM lanes 32*(warp_id%%4) .. +31, so a warp
+            stores rows 32*(warp_id%%4)+lane. Must run on all 32 lanes. *)
+         let n_regs = k.bm * k.bn / 128 in
+         if n_regs < 1 || n_regs > 128 || Int.bit_and n_regs (n_regs - 1) <> 0 then
+           failwith (Printf.sprintf
+             "emit_copy: tcgen05.ld 32x32b needs a power-of-two reg count <= 128, got %d" n_regs);
+         let outs = String.concat ~sep:", "
+           (List.init n_regs ~f:(fun i -> Printf.sprintf "\"=r\"(_t[%d])" i)) in
+         let regs = String.concat ~sep:", "
+           (List.init n_regs ~f:(fun i -> Printf.sprintf "%%%d" i)) in
+         String.concat ~sep:"\n" [
+           "{";
+           Printf.sprintf "  const uint32_t _mbar = (uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar));";
+           "  asm volatile(";
+           "    \"{\\n\\t\"";
+           "    \".reg .pred p;\\n\\t\"";
+           "    \"MMA_DONE_WAIT:\\n\\t\"";
+           "    \"mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 p, [%0], %1, 0x989680;\\n\\t\"";
+           "    \"@!p bra MMA_DONE_WAIT;\\n\\t\"";
+           "    \"}\"";
+           "    :: \"r\"(_mbar), \"r\"(0u) : \"memory\");";
+           "  asm volatile(\"tcgen05.fence::after_thread_sync;\" ::: \"memory\");";
+           Printf.sprintf "  uint32_t _t[%d];" n_regs;
+           Printf.sprintf
+             "  asm volatile(\"tcgen05.ld.sync.aligned.32x32b.x%d.b32 {%s}, [%%%d];\" : %s : \"r\"(smem.tmem_addr) : \"memory\");"
+             n_regs regs n_regs outs;
+           "  asm volatile(\"tcgen05.wait::ld.sync.aligned;\" ::: \"memory\");";
+           Printf.sprintf "  const int _ldc = gridDim.y * %d;" k.bn;
+           Printf.sprintf
+             "  const int _grow = blockIdx.x * %d + 32 * (warp_id %% 4) + (int)(threadIdx.x %% 32);" k.bm;
+           Printf.sprintf "  const int _gcol = blockIdx.y * %d;" k.bn;
+           Printf.sprintf "  for (int _i = 0; _i < %d; _i++) {" n_regs;
+           Printf.sprintf "    %s[(size_t)_grow * _ldc + _gcol + _i] = __uint_as_float(_t[_i]);"
+             dst.tensor_name;
+           "  }";
+           "}";
+         ]
        | Memspace.Global ->
          let n_regs = k.bm * k.bn / 128 in
          Printf.sprintf
@@ -594,10 +650,10 @@ let emit_mma (m : mma_desc) : string =
              (String.concat ~sep:"\n" sub_tile_strs)
 
   | Sm100Tcgen05 ->
-    let (atom_m, atom_n, kind, a_fmt, b_fmt) =
+    let (atom_m, atom_n, atom_k, kind, a_fmt, b_fmt) =
       match m.mma_atom with
       | Atom100 atom ->
-        let (am, an, _ak) = Mma_atom.shape atom in
+        let (am, an, ak) = Mma_atom.shape atom in
         let fmt_of t =
           match String.lowercase (Mma_atom.elem_string t) with
           | "f16"  -> ("f16", 0)
@@ -611,7 +667,7 @@ let emit_mma (m : mma_desc) : string =
         let (kb, fb) = fmt_of atom.Mma_atom.b_type in
         if not (String.equal ka kb) then
           failwith "emit_mma: Sm100Tcgen05 A and B must use the same .kind";
-        (am, an, ka, fa, fb)
+        (am, an, ak, ka, fa, fb)
       | _ -> failwith "emit_mma: Sm100Tcgen05 requires Atom100"
     in
     if atom_m <> 64 && atom_m <> 128 then
@@ -619,6 +675,22 @@ let emit_mma (m : mma_desc) : string =
     if atom_n % 8 <> 0 || atom_n < 8 || atom_n > 256 then
       failwith (Printf.sprintf "emit_mma: tcgen05 needs N in 8..256, step 8, got %d" atom_n);
     let idesc = sm100_idesc ~m:atom_m ~n:atom_n ~a_fmt ~b_fmt in
+    (* K tile of the smem operand (same extraction as the Hopper path) and the
+       number of k16 MMAs it takes to consume one stage. *)
+    let tile_k = match Layout.modes a.tensor_layout with
+      | [_; k] -> k
+      | [_; _; k] -> k
+      | _ -> failwith "emit_mma: Sm100Tcgen05 cannot determine tile K from A's layout"
+    in
+    let elem_bytes = if String.equal kind "tf32" then 4 else 2 in
+    if tile_k % atom_k <> 0 then
+      failwith (Printf.sprintf "emit_mma: tile K %d not a multiple of atom K %d" tile_k atom_k);
+    if tile_k * elem_bytes > 128 then
+      failwith "emit_mma: Sm100Tcgen05 supports at most one 128B swizzle atom along K";
+    let k_steps = tile_k / atom_k in
+    (* advancing K inside a 128B-swizzled K-major tile = +atom_k*elem_bytes bytes
+       on the start address, expressed in 16-byte units in the descriptor *)
+    let desc_step = atom_k * elem_bytes / 16 in
     let desc_a = match m.smem_desc_a with
       | None -> Printf.sprintf "make_sm100_smem_desc(&smem.%s[stage][0])" a.tensor_name
       | Some _ -> Printf.sprintf "make_sm100_smem_desc(%s)" a.tensor_name
@@ -637,16 +709,24 @@ let emit_mma (m : mma_desc) : string =
       Printf.sprintf "  uint64_t desc_b = %s;" desc_b;
       Printf.sprintf "  uint32_t idesc  = 0x%08xu;" idesc;
       "  if ((threadIdx.x % 32) == 0) {";
-      "    asm volatile(";
-      "      \"{\\n\\t\"";
-      "      \".reg .pred p;\\n\\t\"";
-      "      \"setp.ne.b32 p, %4, 0;\\n\\t\"";
+      (if debug_consumer_delay_us > 0
+       then Printf.sprintf "    for (int _w = 0; _w < %d; _w++) __nanosleep(1000);" debug_consumer_delay_us
+       else "");
+      "    #pragma unroll";
+      Printf.sprintf "    for (int _kk = 0; _kk < %d; _kk++) {" k_steps;
+      Printf.sprintf "      uint64_t _da = desc_a + (uint64_t)(_kk * %d);" desc_step;
+      Printf.sprintf "      uint64_t _db = desc_b + (uint64_t)(_kk * %d);" desc_step;
+      "      asm volatile(";
+      "        \"{\\n\\t\"";
+      "        \".reg .pred p;\\n\\t\"";
+      "        \"setp.ne.b32 p, %4, 0;\\n\\t\"";
       Printf.sprintf
-        "      \"tcgen05.mma.cta_group::1.kind::%s [%%0], %%1, %%2, %%3, p;\\n\\t\"" kind;
-      "      \"}\"";
-      Printf.sprintf
-        "      :: \"r\"(tmem_addr), \"l\"(desc_a), \"l\"(desc_b), \"r\"(idesc), \"r\"(%d)" accum;
-      "      : \"memory\");";
+        "        \"tcgen05.mma.cta_group::1.kind::%s [%%0], %%1, %%2, %%3, p;\\n\\t\"" kind;
+      "        \"}\"";
+      "        :: \"r\"(tmem_addr), \"l\"(_da), \"l\"(_db), \"r\"(idesc), \"r\"(_mma_acc)";
+      "        : \"memory\");";
+      "      _mma_acc = 1u;";
+      "    }";
       "  }";
       "}";
     ]
@@ -723,17 +803,35 @@ let emit_op (k:tirix) = function
       n n regs n outs (emit_expr src_addr) col_offset copies
 
   | TmemCommit { mbar_var; cta_mask } ->
-    (* mbarrier operand must be a 32-bit shared address, not a generic pointer *)
-    let mbar = Printf.sprintf "(uint32_t)__cvta_generic_to_shared(&smem.%s)" mbar_var.var_name in
-    (match cta_mask with
-     | None ->
-       Printf.sprintf
-         "asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%%0];\" :: \"r\"(%s) : \"memory\");"
-         mbar
-     | Some mask ->
-       Printf.sprintf
-         "asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%%0], %%1;\" :: \"r\"(%s), \"h\"((uint16_t)%d) : \"memory\");"
-         mbar mask)
+    (* The mbarrier operand is a 32-bit shared address. full_mbar / empty_mbar
+       are arrays indexed by the pipeline stage (same convention as
+       MbarWaitParity / MbarArrive); other barriers are scalar members.
+       tcgen05.commit tracks the MMAs issued by the executing thread, so it
+       must be issued by the same single thread that issued them (lane 0). *)
+    let is_stage_array =
+      String.equal mbar_var.var_name "full_mbar"
+      || String.equal mbar_var.var_name "empty_mbar"
+    in
+    let mbar =
+      if is_stage_array then
+        Printf.sprintf
+          "(uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))"
+          mbar_var.var_name
+      else
+        Printf.sprintf "(uint32_t)__cvta_generic_to_shared(&smem.%s)" mbar_var.var_name
+    in
+    let inst = match cta_mask with
+      | None ->
+        Printf.sprintf
+          "asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%%0];\" :: \"r\"(%s) : \"memory\");"
+          mbar
+      | Some mask ->
+        (* multicast: arrives on the barrier at the same offset in every CTA of the mask *)
+        Printf.sprintf
+          "asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%%0], %%1;\" :: \"r\"(%s), \"h\"((uint16_t)%d) : \"memory\");"
+          mbar mask
+    in
+    Printf.sprintf "if ((threadIdx.x %% 32) == 0) { %s }" inst
 
   | SmemDescInit { desc_var; ptr_expr; leading_dim; stride; swizzle } ->
     let sw_bits = Smem_desc.swizzle_mode_bits (Smem_desc.swizzle_mode_of swizzle) in
@@ -839,7 +937,7 @@ let rec emit_stmt (k: tirix) ?(depth = 0) ?stage_depth  (s : stmt) : string =
           let elem_t = Elemtype.cpp_name t.tensor_elem_type in
           let per_stage = Layout.size t.tensor_layout in
           if tirix_is_tma k then
-            Some (Printf.sprintf "  __align__(128) %s %s[%d][%d];" elem_t name k.pipeline_depth per_stage)
+            Some (Printf.sprintf "  __align__(1024) %s %s[%d][%d];" elem_t name k.pipeline_depth per_stage)
           else
             Some (Printf.sprintf "  %s %s[%d];" elem_t name per_stage)
         | _ -> None)
@@ -857,7 +955,8 @@ let rec emit_stmt (k: tirix) ?(depth = 0) ?stage_depth  (s : stmt) : string =
     in
     let tmem_decl =
       match k.family with
-      | Kernel_desc.Blackwell -> ["  __align__(16) uint32_t tmem_addr;"]
+      | Kernel_desc.Blackwell ->
+        ["  __align__(16) uint32_t tmem_addr;"; "  __align__(8) uint64_t mma_done_mbar;"]
       | _ -> []
     in
     let all = tensor_decls @ mbar_decls @ tmem_decl in
@@ -963,7 +1062,15 @@ let emit_mbar_init_loop (k : tirix) : string =
       ~f:(fun (n, _) -> String.equal n "empty_mbar") in
     let consumer_count = List.count k.cluster.Cluster.warp_roles
       ~f:(fun (_, role) -> Poly.(role = Cluster.Consumer)) in
-    let empty_count = if consumer_count = 0 then 1 else consumer_count in
+    (* Each stage's empty barrier gets one commit arrival per consumer warp from
+       every CTA in the cluster (the commit is multicast), because a CTA's
+       producer writes into its peer's smem too. *)
+    let cta_count =
+      k.cluster.Cluster.dims.Cluster.x
+      * k.cluster.Cluster.dims.Cluster.y
+      * k.cluster.Cluster.dims.Cluster.z in
+    let empty_count =
+      (if consumer_count = 0 then 1 else consumer_count) * max 1 cta_count in
     let empty_init = if has_empty then
       Printf.sprintf
         "      asm volatile(\"mbarrier.init.shared.b64 [%%0], %%1;\"\n\
@@ -974,6 +1081,18 @@ let emit_mbar_init_loop (k : tirix) : string =
       else ""
     in
 
+    let cluster_sync =
+      if Poly.(k.family = Kernel_desc.Blackwell) then
+        String.concat ~sep:"" [
+          "\n  asm volatile(\"barrier.cluster.arrive.release.aligned;\" ::: \"memory\");";
+          "\n  asm volatile(\"barrier.cluster.wait.acquire.aligned;\" ::: \"memory\");" ]
+      else ""
+    in
+    let done_init =
+      if Poly.(k.family = Kernel_desc.Blackwell) then
+        "    asm volatile(\"mbarrier.init.shared.b64 [%0], 1;\" :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.mma_done_mbar)) : \"memory\");\n"
+      else ""
+    in
     let full_count = max 1 (count_arrives k.body) in  (* 2 for GEMM, 1 for copy *)
     let tmem_alloc_s =
       if Poly.(k.family = Kernel_desc.Blackwell) && not (has_tmem_alloc k.body) then
@@ -996,12 +1115,65 @@ let emit_mbar_init_loop (k : tirix) : string =
       \         \"n\"(%d) : \"memory\");\n\
       %s\
       \    }\n\
+      %s\
       \    asm volatile(\"fence.mbarrier_init.release.cluster;\");\n\
       \  }\n\
       %s\
-      \  __syncthreads();"
-      depth full_count empty_init tmem_alloc_s
+      \  __syncthreads();%s"
+      depth full_count empty_init done_init tmem_alloc_s cluster_sync
 
+
+(* ---- Blackwell epilogue split ------------------------------------------ *)
+
+(* The "store acc -> global" copy that the descriptor puts at the end of the
+   consumer body. *)
+let is_acc_global_store (s : stmt) : bool =
+  match s with
+  | SOp (Copy c) ->
+    (match c.copy_kind with
+     | RegToSmem ->
+       let (Tensor src) = c.src_tensor in
+       let (Tensor dst) = c.dst_tensor in
+       String.equal src.tensor_name "acc"
+       && String.equal (Memspace.name dst.tensor_memspace) "global"
+     | _ -> false)
+  | _ -> false
+
+(* Pull the acc stores out of a consumer body (top level and inside SSeq).
+   Returns (remaining statements, extracted stores). *)
+let rec extract_acc_stores (stmts : stmt list) : stmt list * stmt list =
+  List.fold stmts ~init:([], []) ~f:(fun (rest, stores) s ->
+    if is_acc_global_store s then (rest, stores @ [s])
+    else
+      match s with
+      | SSeq ss ->
+        let (r, st) = extract_acc_stores ss in
+        ((if List.is_empty r then rest else rest @ [SSeq r]), stores @ st)
+      | _ -> (rest @ [s], stores))
+
+(* Warps that run the epilogue. tcgen05.ld 32x32b lets a warp read only TMEM
+   lanes 32*(warp_id%4)..+31, so the epilogue warps must cover all four
+   quadrants of the tile. *)
+let epilogue_warp_ids (k : tirix) : int list =
+  let ids = List.filter_map k.cluster.Cluster.warp_roles
+    ~f:(fun (id, r) -> if Poly.(r = Cluster.Epilogue) then Some id else None) in
+  let quads = List.dedup_and_sort ~compare:Int.compare
+    (List.map ids ~f:(fun i -> i % 4)) in
+  if not (List.equal Int.equal quads [0; 1; 2; 3]) then
+    failwith (Printf.sprintf
+      "Blackwell epilogue needs Epilogue warps covering all 4 TMEM lane quadrants (warp_id %% 4 = 0..3); have warps [%s]. Give one more warp the Epilogue role in Kernel_desc.make_blackwell."
+      (String.concat ~sep:"," (List.map ids ~f:Int.to_string)));
+  ids
+
+(* MMA side: ONE thread, after the last MMA has been issued. tcgen05.commit
+   arrives (once) on mma_done_mbar when all prior MMAs of this thread finished. *)
+let emit_mma_done_signal () : string =
+  String.concat ~sep:"\n" [
+    "  if ((threadIdx.x % 32) == 0) {";
+    "    asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];\"";
+    "      :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar))) : \"memory\");";
+    "  }";
+  ]
 
 let emit_kernel_func (k : tirix) : string =
   let n_threads = Cluster.thread_count k.cluster in
@@ -1030,7 +1202,18 @@ let emit_kernel_func (k : tirix) : string =
         per_thread per_thread
     else ""
   in
-  let warp_cases = List.map warp_groups ~f:(fun (role, body) ->
+  let is_bw = Poly.(k.family = Kernel_desc.Blackwell) in
+  (* Blackwell: move the acc store out of the consumer into the epilogue warps *)
+  let split = List.map warp_groups ~f:(fun (role, body) ->
+    match role with
+    | Cluster.Consumer when is_bw ->
+      let (rest, stores) = extract_acc_stores body in
+      (role, rest, stores)
+    | _ -> (role, body, []))
+  in
+  let epi_stores = List.concat_map split ~f:(fun (_, _, st) -> st) in
+  let need_epilogue = is_bw && not (List.is_empty epi_stores) in
+  let warp_cases = List.map split ~f:(fun (role, body, _) ->
     let warp_ids = List.filter_map k.cluster.Cluster.warp_roles
       ~f:(fun (id, r) -> if Poly.(r = role) then Some id else None)
     in
@@ -1041,14 +1224,30 @@ let emit_kernel_func (k : tirix) : string =
         String.concat ~sep:" || "
           (List.map ids ~f:(Printf.sprintf "warp_id == %d"))
     in
-    (* inject acc_frag only into the consumer warpgroup body *)
+    (* inject acc_frag only into the consumer warpgroup body (not needed on
+       Blackwell: the accumulator lives in TMEM) *)
     let prefix = match role with
-      | Cluster.Consumer -> sm90_acc_decl
+      | Cluster.Consumer -> if is_bw then "" else sm90_acc_decl
       | _ -> ""
     in
-    Printf.sprintf "if (%s) {\n%s%s\n}"
-      cond prefix (emit_stmts k ~depth:2 ?stage_depth:sd body))
+    let body_s = emit_stmts k ~depth:2 ?stage_depth:sd body in
+    let body_s =
+      if need_epilogue && Poly.(role = Cluster.Consumer)
+      then body_s ^ "\n" ^ emit_mma_done_signal ()
+      else body_s
+    in
+    Printf.sprintf "if (%s) {\n%s%s\n}" cond prefix body_s)
   in
+  let epilogue_case =
+    if need_epilogue then
+      let ids = epilogue_warp_ids k in
+      let cond = String.concat ~sep:" || "
+        (List.map ids ~f:(Printf.sprintf "warp_id == %d")) in
+      [ Printf.sprintf "if (%s) {\n%s\n}" cond
+          (emit_stmts k ~depth:2 ?stage_depth:sd epi_stores) ]
+    else []
+  in
+  let warp_cases = warp_cases @ epilogue_case in
 
   let warp_dispatch =
     if List.is_empty warp_cases then ""
@@ -1058,7 +1257,10 @@ let emit_kernel_func (k : tirix) : string =
 
   let tiled_mma_s = emit_tiled_mma_decl k in
   let stage_decl =
-    if tirix_is_tma k then "int stage = 0;\n  (void)stage;\n" else ""
+    (if tirix_is_tma k then "int stage = 0;\n  (void)stage;\n" else "")
+    ^ (if Poly.(k.family = Kernel_desc.Blackwell)
+       then "uint32_t _mma_acc = 0u;\n  (void)_mma_acc;\n" else "")
+
   in
   let mbar_init_s = emit_mbar_init_loop k in
   let tmem_dealloc_s =
@@ -1075,7 +1277,7 @@ let emit_kernel_func (k : tirix) : string =
 
   Printf.sprintf
       "extern \"C\" __global__ %s__launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
-      \  extern __shared__ char smem_buf[];\n\
+      \  extern __shared__ __align__(1024) char smem_buf[];\n\
       \  SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_buf);\n\
       \  char* __smem_base = smem_buf;\n\
       \  uint32_t __smem_base_u32 = (uint32_t)__cvta_generic_to_shared(smem_buf);\n\

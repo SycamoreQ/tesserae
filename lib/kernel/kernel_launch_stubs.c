@@ -65,6 +65,7 @@ CAMLprim value caml_tensor_map_encode_2d(
     int tile_rows         = Int_val(v_tile_rows);
     int tile_cols         = Int_val(v_tile_cols);
 
+
     CUtensorMapDataType dtype =
         (elem_bytes == 2) ? CU_TENSOR_MAP_DATA_TYPE_FLOAT16 :
         (elem_bytes == 4) ? CU_TENSOR_MAP_DATA_TYPE_FLOAT32 :
@@ -331,6 +332,130 @@ CAMLprim value caml_device_info(value unit) {
 CAMLprim value caml_tensor_map_encode_2d_bytecode(value* argv, int argc) {
   (void)argc;
   return caml_tensor_map_encode_2d(
+    argv[0], argv[1], argv[2], argv[3],
+    argv[4], argv[5], argv[6]);
+}
+
+
+/* ------------------------------------------------------------------------
+   128B-swizzled tensor maps (for tcgen05 / SM100 GEMM operands).
+
+   Same as the unswizzled versions above except for the swizzle mode.
+   CU_TENSOR_MAP_SWIZZLE_128B needs the inner box extent to be exactly 128
+   bytes for the SW128 K-major descriptor the emitter generates (SBO = 1024B),
+   so tile_cols * elem_bytes must be 128 (e.g. 64 x f16).
+   The destination smem tile must be 1024-byte aligned.
+   ------------------------------------------------------------------------ */
+
+CAMLprim value caml_create_tma_descriptor_sw128(
+    value ptr_val,
+    value rows_val,
+    value cols_val,
+    value tile_rows_val,
+    value tile_cols_val)
+{
+  CAMLparam5(ptr_val, rows_val, cols_val, tile_rows_val, tile_cols_val);
+
+  if ((int) sizeof(uint16_t) * Int_val(tile_cols_val) != 128)
+    caml_failwith("create_tma_descriptor_sw128: tile_cols * 2 bytes must be 128");
+
+  CUtensorMap host_tmap;
+
+  void* global_ptr = (void*)(intnat) Nativeint_val(ptr_val);
+  uint64_t global_dim[2]    = { (uint64_t)Int_val(cols_val),
+                                 (uint64_t)Int_val(rows_val) };
+  uint64_t global_stride[1] = { (uint64_t)Int_val(cols_val) * sizeof(uint16_t) };
+  uint32_t box_dim[2]       = { (uint32_t)Int_val(tile_cols_val),
+                                 (uint32_t)Int_val(tile_rows_val) };
+  uint32_t elem_stride[2]   = { 1, 1 };
+
+  CUresult rc = cuTensorMapEncodeTiled(
+    &host_tmap,
+    CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
+    2,
+    global_ptr,
+    global_dim,
+    global_stride,
+    box_dim,
+    elem_stride,
+    CU_TENSOR_MAP_INTERLEAVE_NONE,
+    CU_TENSOR_MAP_SWIZZLE_128B,
+    CU_TENSOR_MAP_L2_PROMOTION_NONE,
+    CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
+  );
+
+  if (rc != CUDA_SUCCESS) {
+    const char* msg;
+    cuGetErrorString(rc, &msg);
+    caml_failwith(msg ? msg : "cuTensorMapEncodeTiled (sw128) failed");
+  }
+
+  void* dev_tmap = NULL;
+  CUDA_CHECK(cudaMalloc(&dev_tmap, sizeof(CUtensorMap)));
+  CUDA_CHECK(cudaMemcpy(dev_tmap, &host_tmap, sizeof(CUtensorMap), cudaMemcpyHostToDevice));
+
+  CAMLreturn(caml_copy_nativeint((intnat) dev_tmap));
+}
+
+CAMLprim value caml_tensor_map_encode_2d_sw128(
+    value v_tmap_ptr,
+    value v_data_ptr,
+    value v_elem_bytes,
+    value v_global_rows,
+    value v_global_cols,
+    value v_tile_rows,
+    value v_tile_cols)
+{
+    CAMLparam5(v_tmap_ptr, v_data_ptr, v_elem_bytes, v_global_rows, v_global_cols);
+    CAMLxparam2(v_tile_rows, v_tile_cols);
+    CUtensorMap* tmap     = (CUtensorMap*)Nativeint_val(v_tmap_ptr);
+    void*        data     = (void*)Nativeint_val(v_data_ptr);
+    int elem_bytes        = Int_val(v_elem_bytes);
+    int global_rows       = Int_val(v_global_rows);
+    int global_cols       = Int_val(v_global_cols);
+    int tile_rows         = Int_val(v_tile_rows);
+    int tile_cols         = Int_val(v_tile_cols);
+
+    CUtensorMapDataType dtype =
+        (elem_bytes == 2) ? CU_TENSOR_MAP_DATA_TYPE_FLOAT16 :
+        (elem_bytes == 4) ? CU_TENSOR_MAP_DATA_TYPE_FLOAT32 :
+        (caml_failwith("unsupported elem size"), CU_TENSOR_MAP_DATA_TYPE_FLOAT16);
+
+    if (elem_bytes * tile_cols != 128)
+        caml_failwith("tensor_map_encode_2d_sw128: tile_cols * elem_bytes must be 128");
+
+    cuuint64_t globalDim[2]     = { (cuuint64_t)global_cols,
+                                    (cuuint64_t)global_rows };
+    cuuint64_t globalStrides[1] = { (cuuint64_t)(global_cols * elem_bytes) };
+    cuuint32_t boxDim[2]        = { (cuuint32_t)tile_cols,
+                                    (cuuint32_t)tile_rows };
+    cuuint32_t elemStrides[2]   = { 1, 1 };
+
+    CUresult res = cuTensorMapEncodeTiled(
+        tmap,
+        dtype,
+        2,
+        data,
+        globalDim,
+        globalStrides,
+        boxDim,
+        elemStrides,
+        CU_TENSOR_MAP_INTERLEAVE_NONE,
+        CU_TENSOR_MAP_SWIZZLE_128B,
+        CU_TENSOR_MAP_L2_PROMOTION_NONE,
+        CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+
+    if (res != CUDA_SUCCESS) {
+        const char* err;
+        cuGetErrorString(res, &err);
+        caml_failwith(err);
+    }
+    CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_tensor_map_encode_2d_sw128_bytecode(value* argv, int argc) {
+  (void)argc;
+  return caml_tensor_map_encode_2d_sw128(
     argv[0], argv[1], argv[2], argv[3],
     argv[4], argv[5], argv[6]);
 }

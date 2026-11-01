@@ -123,3 +123,8 @@ let encode_tensor_map_2d
     tmap_ptr data_ptr elem_bytes
     global_rows global_cols
     tile_rows tile_cols
+
+
+external create_tma_descriptor_sw128 :
+  nativeint -> int -> int -> int -> int -> nativeint
+  = "caml_create_tma_descriptor_sw128"
