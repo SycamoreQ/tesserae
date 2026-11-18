@@ -95,6 +95,7 @@ type kernel = {
   elem   : elem;
   tile   : tile_shape;
   stages : int;
+  multicast: bool;
   args   : tensor_arg list;
   body   : stmt;
 }
@@ -106,10 +107,7 @@ val make :
   elem:elem ->
   tile:tile_shape ->
   stages:int ->
-  args:(string * elem * space * arg_dir) list ->
-  body:stmt ->
-  kernel
-
+  args:(string * elem * space * arg_dir) list -> body:stmt -> kernel
 
 val tensor_arg : string -> elem -> space -> tensor_expr
 val arg        : string -> elem -> space -> tensor_expr

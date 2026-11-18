@@ -13,6 +13,30 @@ let tirix_is_tma (k : tirix) =
    0 = off. Run the K>256 test with a few us to expose pipeline hazards. *)
 let debug_consumer_delay_us = 0
 
+(* Pipeline wait-time accounting. When true, the kernel measures with clock64()
+   how many cycles each warp group spent blocked on the full / empty mbarriers
+   (and, for the epilogue, waiting for the MMAs and doing tcgen05.ld + stores),
+   and prints one line per role for a few CTAs with device printf.
+   Meant for a single launch: run the benchmark with
+     -warmup 1 -iters 1 -repeats 1
+   Set to false for real timings (it adds clock reads to every wait). *)
+let debug_pipeline_stats = false
+
+(* only a handful of CTAs print, e.g. (0,0) (16,0) (0,16) (16,16) of a 32x32 grid *)
+let stats_cta_cond = "(blockIdx.x % 16 == 0 && blockIdx.y % 16 == 0)"
+
+let stats_print_group (role_s : string) : string =
+  String.concat ~sep:"\n" [
+    "    if (lane_id == 0 && " ^ stats_cta_cond ^ ") {";
+    "      const long long _tot = clock64() - _grp_t0;";
+    "      printf(\"[stats] cta=(%d,%d) " ^ role_s
+      ^ " total=%lld cyc  wait_full=%lld (%.1f%%)  wait_empty=%lld (%.1f%%)\\n\",";
+    "             (int)blockIdx.x, (int)blockIdx.y, _tot,";
+    "             _wait_full_mbar, 100.0 * (double)_wait_full_mbar / (double)_tot,";
+    "             _wait_empty_mbar, 100.0 * (double)_wait_empty_mbar / (double)_tot);";
+    "    }";
+  ]
+
 let emit_scalar_ty : type a. a scalar_ty -> string = function
   | U8 ->  "uint8_t"
   | U32 -> "uint32_t"
@@ -124,7 +148,7 @@ let uses_multicast (k : tirix) : bool = stmts_use_multicast k.body
 
 (* All mbarrier address computations use __smem_base + offsetof to avoid
    NVRTC folding away the cvta.to.shared conversion on smem symbols. *)
-let emit_barrier (k : tirix) = function
+let emit_barrier (_k : tirix) = function
   | CtaSync ->  "__syncthreads();"
   | WarpSync -> "__syncwarp();"
   | MemFence -> "__threadfence();"
@@ -137,32 +161,32 @@ let emit_barrier (k : tirix) = function
       |} mbar.var_name count
 
   | MbarArriveExpect { mbar; bytes } ->
-      (* For Blackwell with 2SM cluster (multicast TMA), the mbarrier arrive
-         must use cluster scope to match the cp.async.bulk...shared::cluster
-         instruction. Otherwise the arrive and TMA completion are tracked in
-         different scopes, causing deadlock. *)
-      let scope =
-        if Cluster.is_2sm k.cluster then "cluster" else "cta"
+      (* Cluster-scope acquire/release is only needed when a CTA's barrier is
+         signalled by ANOTHER CTA (multicast TMA / multicast commit). Without
+         multicast, cta scope is enough and cheaper. *)
+      let scope = "cta"
       in
+      (* Leader-only multicast: each CTA's mbar receives exactly its own
+         expect_tx bytes -- A from its own TMA load, B from the leader's
+         multicast. So expect (bytes), NOT (bytes * 2). The old *2 was
+         a compensation for a both-CTAs-issue design and would deadlock
+         (expect 2A+2B, receive A+B) as soon as multicast was actually
+         emitted by the lowering. *)
       Printf.sprintf {|
         if (threadIdx.x == 0) {
             asm volatile("mbarrier.arrive.expect_tx.release.%s.shared::cta.b64 _, [%%0], %%1;"
                 :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))), "r"(%s) : "memory");
         }
-      |} scope mbar.var_name
-        (* With 2SM multicast (mask 0b11) every CTA's barrier receives the bytes of
-           its own TMA and of the peer's. Expect both, or the phase can complete
-           before the whole tile has landed. *)
-        (if uses_multicast k
-         then Printf.sprintf "(%s) * 2" (emit_expr bytes)
-         else emit_expr bytes)
+      |} scope mbar.var_name (emit_expr bytes)
 
   | MbarWaitParity { mbar; phase } ->
       (* For Blackwell with 2SM cluster, wait must also use cluster scope *)
-      let scope =
-        if Cluster.is_2sm k.cluster then "cluster" else "cta"
+      (* Cluster-scope acquire/release is only needed when a CTA's barrier is
+         signalled by ANOTHER CTA (multicast TMA / multicast commit). Without
+         multicast, cta scope is enough and cheaper. *)
+      let scope = "cta"
       in
-      Printf.sprintf {|
+      let wait_asm = Printf.sprintf {|
         asm volatile(
           "{"
           "  .reg .pred p;"
@@ -173,7 +197,14 @@ let emit_barrier (k : tirix) = function
           :: "r"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))),
              "r"((uint32_t)(%s))
           : "memory");
-      |} scope mbar.var_name (emit_expr phase)
+      |} scope mbar.var_name (emit_expr phase) in
+      if debug_pipeline_stats
+         && (String.equal mbar.var_name "full_mbar"
+             || String.equal mbar.var_name "empty_mbar")
+      then
+        Printf.sprintf "{ const long long _tw0 = clock64();\n%s\n_wait_%s += clock64() - _tw0; }"
+          wait_asm mbar.var_name
+      else wait_asm
 
   | MbarArrive { mbar } ->
         Printf.sprintf
@@ -301,10 +332,34 @@ let emit_copy (k: tirix) (c : copy) : string =
       | Some v ->
         Printf.sprintf "(uint64_t*)(__smem_base + offsetof(SharedStorage, %s) + stage * sizeof(uint64_t))" v.var_name
     in
+    (* Only the leader of the CTA pair issues the multicast TMA; the peer
+       just does its own expect_tx and waits for the leader's bytes to land
+       on its local mbar. Issuing from both CTAs would double the L2->SMEM
+       traffic (each CTA's multicast writes to both CTAs' smem), which is a
+       pessimisation, not an optimisation.
+       Assumes a (2,1,1) cluster along x — the leader is cluster_ctaid.x == 0
+       and the mask selects both CTAs. Adjust leader/mask if you change the
+       cluster shape. *)
+    if Poly.(k.cluster.Cluster.dims.Cluster.x <> 2) then
+      failwith (Printf.sprintf
+        "TmaMulticast emit currently assumes a 2-CTA cluster along x; got (%d,%d,%d). \
+         Generalise leader/mask for other shapes."
+        k.cluster.Cluster.dims.Cluster.x
+        k.cluster.Cluster.dims.Cluster.y
+        k.cluster.Cluster.dims.Cluster.z);
+    let leader_check =
+      "([](){ uint32_t id; asm volatile(\"mov.u32 %0, %%cluster_ctaid.x;\" \
+       : \"=r\"(id)); return id; }() == 0)"
+    in
+    let guard = match c.pred_expr with
+      | None -> Printf.sprintf "(%s)" leader_check
+      | Some p -> Printf.sprintf "((%s) && (%s))" (emit_expr p) leader_check
+    in
+    let mask = 0b11 in
     Printf.sprintf
-      "%stma_2d_gmem2smem_multicast(__smem_base + offsetof(SharedStorage, %s)%s, \
-       %s_tmap, %s, %s, %s, 0b11);"
-      pred dst.tensor_name stage_off src.tensor_name x_coord y_coord mbar_s
+      "if (%s) tma_2d_gmem2smem_multicast(__smem_base + offsetof(SharedStorage, %s)%s, \
+       %s_tmap, %s, %s, %s, %d);"
+      guard dst.tensor_name stage_off src.tensor_name x_coord y_coord mbar_s mask
 
   | RegToSmem ->
       let src_name =
@@ -336,10 +391,11 @@ let emit_copy (k: tirix) (c : copy) : string =
          let ldc_s =
            if has_param "N" then "N" else Printf.sprintf "(gridDim.y * %d)" k.bn in
          let row_guard = if has_param "M" then "_grow < M" else "true" in
-         let col_guard = if has_param "N" then "(_gcol + _i) < N" else "true" in
+         let _col_guard = if has_param "N" then "(_gcol + _i) < N" else "true" in
          String.concat ~sep:"\n" [
            "{";
            Printf.sprintf "  const uint32_t _mbar = (uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar));";
+           (if debug_pipeline_stats then "  const long long _e0 = clock64();" else "");
            "  asm volatile(";
            "    \"{\\n\\t\"";
            "    \".reg .pred p;\\n\\t\"";
@@ -348,6 +404,7 @@ let emit_copy (k: tirix) (c : copy) : string =
            "    \"@!p bra MMA_DONE_WAIT;\\n\\t\"";
            "    \"}\"";
            "    :: \"r\"(_mbar), \"r\"(0u) : \"memory\");";
+           (if debug_pipeline_stats then "  const long long _e1 = clock64();" else "");
            "  asm volatile(\"tcgen05.fence::after_thread_sync;\" ::: \"memory\");";
            Printf.sprintf "  uint32_t _t[%d];" n_regs;
            Printf.sprintf
@@ -359,11 +416,27 @@ let emit_copy (k: tirix) (c : copy) : string =
              "  const int _grow = blockIdx.x * %d + 32 * (warp_id %% 4) + (int)(threadIdx.x %% 32);" k.bm;
            Printf.sprintf "  const int _gcol = blockIdx.y * %d;" k.bn;
            Printf.sprintf "  if (%s) {" row_guard;
-           Printf.sprintf "    for (int _i = 0; _i < %d; _i++) {" n_regs;
-           Printf.sprintf "      if (%s) %s[(size_t)_grow * _ldc + _gcol + _i] = __uint_as_float(_t[_i]);"
-             col_guard dst.tensor_name;
+           "    #pragma unroll";
+           Printf.sprintf "    for (int _i = 0; _i < %d; _i += 4) {" n_regs;
+           (if has_param "N" then "      if ((_gcol + _i + 3) < N) {" else "      {");
+           "        float4 _val = make_float4(";
+           "            __uint_as_float(_t[_i]), __uint_as_float(_t[_i+1]),";
+           "            __uint_as_float(_t[_i+2]), __uint_as_float(_t[_i+3]));";
+           Printf.sprintf "        *reinterpret_cast<float4*>(&%s[(size_t)_grow * _ldc + _gcol + _i]) = _val;" dst.tensor_name;
+           "      } else {";
+           "        for (int _j = 0; _j < 4; _j++) {";
+           (if has_param "N" then
+              Printf.sprintf "          if ((_gcol + _i + _j) < N) %s[(size_t)_grow * _ldc + _gcol + _i + _j] = __uint_as_float(_t[_i+_j]);" dst.tensor_name
+            else
+              Printf.sprintf "          %s[(size_t)_grow * _ldc + _gcol + _i + _j] = __uint_as_float(_t[_i+_j]);" dst.tensor_name);
+           "        }";
+           "      }";
            "    }";
            "  }";
+           (if debug_pipeline_stats then
+              "  if (lane_id == 0 && warp_id == 2 && " ^ stats_cta_cond ^ ")\n"
+              ^ "    printf(\"[stats] cta=(%d,%d) epilogue wait_mma_done=%lld cyc  tcgen05.ld+store=%lld cyc\\n\", (int)blockIdx.x, (int)blockIdx.y, _e1 - _e0, clock64() - _e1);"
+            else "");
            "}";
          ]
        | Memspace.Global ->
@@ -1267,6 +1340,18 @@ let emit_kernel_func (k : tirix) : string =
       then body_s ^ "\n" ^ emit_mma_done_signal ()
       else body_s
     in
+    let body_s =
+      if debug_pipeline_stats then
+        (match role with
+         | Cluster.Producer ->
+           "    const long long _grp_t0 = clock64();\n" ^ body_s ^ "\n"
+           ^ stats_print_group "producer"
+         | Cluster.Consumer ->
+           "    const long long _grp_t0 = clock64();\n" ^ body_s ^ "\n"
+           ^ stats_print_group "consumer"
+         | _ -> body_s)
+      else body_s
+    in
     Printf.sprintf "if (%s) {\n%s%s\n}" cond prefix body_s)
   in
   let epilogue_case =
@@ -1288,7 +1373,10 @@ let emit_kernel_func (k : tirix) : string =
 
   let tiled_mma_s = emit_tiled_mma_decl k in
   let stage_decl =
-    (if tirix_is_tma k then "int stage = 0;\n  (void)stage;\n" else "")
+    (if debug_pipeline_stats
+     then "long long _wait_full_mbar = 0, _wait_empty_mbar = 0;\n  (void)_wait_full_mbar; (void)_wait_empty_mbar;\n"
+     else "")
+    ^ (if tirix_is_tma k then "int stage = 0;\n  (void)stage;\n" else "")
     ^ (if Poly.(k.family = Kernel_desc.Blackwell)
        then "uint32_t _mma_acc = 0u;\n  (void)_mma_acc;\n" else "")
 
@@ -1502,8 +1590,8 @@ let emit (k : tirix) : Backend_cute.output =
   let full_source = String.concat ~sep:"\n\n"
     [ kernel_source; host_launcher ]
   in
-  (*Stdlib.Printf.printf "=== Generated kernel: %s ===\n%s\n=== End kernel ===\n%!"
-  k.name full_source; *)
+  Stdlib.Printf.printf "=== Generated kernel: %s ===\n%s\n=== End kernel ===\n%!"
+  k.name full_source;
   { Backend_cute.filename = k.name ^ ".cuh"
   ; includes
   ; helpers

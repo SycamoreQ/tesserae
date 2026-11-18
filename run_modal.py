@@ -25,34 +25,76 @@ tesserae_image = (
 
 app = modal.App("tesserae-gpu-runner")
 
+# Shared by every function.
+BASE_ENV = {
+    "C_INCLUDE_PATH": "/usr/include:/usr/include/x86_64-linux-gnu:/usr/local/cuda/include",
+    "CPLUS_INCLUDE_PATH": "/usr/include:/usr/include/x86_64-linux-gnu:/usr/local/cuda/include",
+    "CUTLASS_PATH": "/tmp/cutlass_latest/include",
+}
 
-@app.function(
-    image=tesserae_image,
-    gpu="B200",
-    timeout=600,
-    env={
-        "C_INCLUDE_PATH": "/usr/include:/usr/include/x86_64-linux-gnu:/usr/local/cuda/include",
-        "CPLUS_INCLUDE_PATH": "/usr/include:/usr/include/x86_64-linux-gnu:/usr/local/cuda/include",
-        "CUTLASS_PATH": "/tmp/cutlass_latest/include",
-        "CUDA_LAUNCH_BLOCKING": "1",
-    },
-)
+# Tests: launches are synchronous, so an error is reported at the launch that
+# caused it. NEVER use this for the benchmark: it serialises every launch.
+TEST_ENV = {**BASE_ENV, "CUDA_LAUNCH_BLOCKING": "1"}
+
+
+def _sh(cmd: str, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(f"eval $(opam env) && cd /workspace && {cmd}", shell=True, **kw)
+
+
+def _build() -> bool:
+    print("Building OCaml project...")
+    r = _sh("dune build", capture_output=True, text=True)
+    if r.returncode != 0:
+        print("❌ Build failed:\n", r.stderr)
+        return False
+    return True
+
+
+@app.function(image=tesserae_image, gpu="B200", timeout=600, env=TEST_ENV)
 def run_tesserae_tests():
-    setup_cmd = "eval $(opam env) && cd /workspace && dune build"
-
-    print("Building OCaml project on GPU instance...")
-    build_result = subprocess.run(setup_cmd, shell=True, capture_output=True, text=True)
-
-    if build_result.returncode != 0:
-        print("❌ Build failed:\n", build_result.stderr)
+    if not _build():
         return
-
     print("Build successful! Running test suite...")
+    r = _sh("timeout 300s dune test")
+    print("All tests passed!" if r.returncode == 0
+          else "Test suite failed. Check the logs above.")
 
-    test_cmd = "eval $(opam env) && cd /workspace && timeout 120s dune test"
-    test_result = subprocess.run(test_cmd, shell=True)
 
-    if test_result.returncode == 0:
-        print("All tests passed!")
+@app.function(image=tesserae_image, gpu="B200", timeout=900, env=BASE_ENV)
+def run_tesserae_bench(args: str = ""):
+    """GEMM timing baseline. No CUDA_LAUNCH_BLOCKING here (see TEST_ENV)."""
+    if not _build():
+        return
+    subprocess.run(
+        "nvidia-smi --query-gpu=name,clocks.max.sm,clocks.sm --format=csv",
+        shell=True,
+    )
+    print(f"Running benchmark: bench_gemm {args}")
+    r = _sh(f"timeout 600s dune exec lib/runtime/bench/bench_gemm.exe -- {args}")
+    if r.returncode != 0:
+        print("Benchmark failed or timed out. Check the logs above.")
+
+
+@app.function(image=tesserae_image, timeout=600, env=BASE_ENV)
+def check_build():
+    """No GPU needed, so it starts immediately even when B200s are queued.
+    The link step may fail here if the image has no libcuda; in that case use
+    the GPU functions instead."""
+    if _build():
+        print("Build OK.")
+
+
+@app.local_entrypoint()
+def main(bench: bool = False, build_only: bool = False, bench_args: str = ""):
+    """
+    modal run run_modal.py                      # tests
+    modal run run_modal.py --bench              # benchmark, default 4096^3
+    modal run run_modal.py --bench --bench-args "-m 2048 -n 2048 -k 2048"
+    modal run run_modal.py --build-only         # compile check, no GPU
+    """
+    if build_only:
+        check_build.remote()
+    elif bench:
+        run_tesserae_bench.remote(bench_args)
     else:
-        print("Test suite failed. Check the logs above.")
+        run_tesserae_tests.remote()

@@ -1,0 +1,4 @@
+(executable
+ (name bench_gemm)
+ (libraries base stdio unix
+  tesserae_runtime tesserae_kernel tesserae_blackwell_kernels))

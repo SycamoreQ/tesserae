@@ -74,12 +74,13 @@ type kernel = {
   elem : elem;
   tile : tile_shape;
   stages : int;
+  multicast: bool;
   args : tensor_arg list;
   body: stmt;
 }
 
 let make ~name ~arch ~elem ~tile ~stages ~args ~body =
-  { name; arch; elem; tile; stages; args; body }
+  { name; arch; elem; tile; stages; multicast = false; args; body }
 
 let tensor_arg name e sp = Arg (name, e, sp)
 let arg name e sp = Arg (name, e, sp)

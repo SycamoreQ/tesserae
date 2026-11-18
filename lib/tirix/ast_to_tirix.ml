@@ -117,7 +117,10 @@ let infer_copy_kind (ctx : ctx)
      | Kernel_ast.SM80 -> Tirix.CpAsync
      | Kernel_ast.SM90a -> Tirix.TmaLoad
      | Kernel_ast.SM100a ->
-       if ctx.multicast then Tirix.TmaMulticast else Tirix.TmaLoad)
+       let (Tirix.Tensor dst_t) = dst in
+       let is_b = String.is_substring dst_t.tensor_name ~substring:"_B" in
+       if ctx.multicast && is_b then Tirix.TmaMulticast
+       else Tirix.TmaLoad)
 
   | "shared", "global" -> Tirix.SmemToGlobal
 
@@ -335,7 +338,7 @@ let group_role_of_pred (ctx : ctx) (pred : Kernel_ast.pred_expr)
   | _ -> None
 
 
-let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
+let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
     (stmt : Kernel_ast.stmt) : Tirix.stmt =
   match stmt with
 
@@ -440,7 +443,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
        the consumers released it. Round r = k / depth needs the (r-1)th release,
        i.e. parity (r + 1) % 2. Round 0 passes immediately on a fresh barrier. *)
     let empty_wait = match ctx.empty_mbar, loop_ctx.k_var with
-      | Some empty, Some kv when is_tma && loop_ctx.in_warp_group ->
+      | Some empty, Some kv when is_tma && loop_ctx.in_warp_group && not skip_empty_wait ->
         let phase =
           Tirix.Arith (Tirix.Arith.Mod,
             Tirix.Arith (Tirix.Arith.Add,
@@ -580,6 +583,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
             Tirix.Expr (Tirix.Arith (Tirix.Arith.Mod, Tirix.Var loop_var,
               Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)))) ]
     in
+    let lowered_body = convert_stmts_with_skip ctx new_loop_ctx body_stmts in
     let loop = Tirix.SFor {
       var = loop_var
     ; start = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val)
@@ -587,7 +591,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     ; step = Tirix.Const (Tirix.S32, 1l)
     ; dir = Tirix.Upto
     ; unroll = false
-    ; body = stage_assign @ List.map body_stmts ~f:(convert_stmt ctx new_loop_ctx)
+    ; body = stage_assign @ lowered_body
     } in
     (match stage_opt with
      | None -> loop
@@ -600,7 +604,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
     Tirix.SPipeline {
       stages = desc.Kernel_ast.stages
     ; prologue = []
-    ; mainloop = List.map stmts ~f:(convert_stmt ctx loop_ctx)
+    ; mainloop = convert_stmts_with_skip ctx loop_ctx stmts
     ; epilogue = []
     }
 
@@ -613,17 +617,29 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx)
        (* warp_dispatch branch: becomes a warp group of that role *)
        Tirix.SSeq
          (Tirix.SWarpGroup
-            (role, List.map thn
-               ~f:(convert_stmt ctx { loop_ctx with in_warp_group = true }))
+            (role, convert_stmts_with_skip ctx { loop_ctx with in_warp_group = true } thn)
           :: List.map els ~f:(convert_stmt ctx loop_ctx))
      | None ->
        Tirix.SIf (
          lower_pred pred,
-         List.map thn ~f:(convert_stmt ctx loop_ctx),
-         List.map els ~f:(convert_stmt ctx loop_ctx)))
+         convert_stmts_with_skip ctx loop_ctx thn,
+         convert_stmts_with_skip ctx loop_ctx els))
 
   | Kernel_ast.Seq stmts ->
-    Tirix.SSeq (List.map stmts ~f:(convert_stmt ctx loop_ctx))
+    Tirix.SSeq (convert_stmts_with_skip ctx loop_ctx stmts)
+
+and convert_stmts_with_skip (ctx : ctx) (loop_ctx : loop_ctx) (stmts : Kernel_ast.stmt list) : Tirix.stmt list =
+  let rec loop prev_was_tma = function
+    | [] -> []
+    | s :: rest ->
+      let is_tma = match s with
+        | Kernel_ast.Load (Kernel_ast.Arg (_, _, Kernel_ast.Global), Kernel_ast.Smem _, _) -> true
+        | _ -> false
+      in
+      let lowered = convert_stmt ctx loop_ctx ~skip_empty_wait:prev_was_tma s in
+      lowered :: loop is_tma rest
+  in
+  loop false stmts
 
 
 let lower (k : Kernel_ast.kernel) : Tirix.tirix =
@@ -677,7 +693,7 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   ; cta_count =
       cluster.Cluster.dims.Cluster.x * cluster.Cluster.dims.Cluster.y
       * cluster.Cluster.dims.Cluster.z
-  ; multicast = false
+  ;   multicast = k.Kernel_ast.multicast;
   } in
 
   (* __syncthreads() after mbarrier init loop (warp 0 lane 0) so that
