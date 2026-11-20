@@ -10,6 +10,7 @@ let pp_axis = function X -> "x" | Y -> "y" | Z -> "z"
 let pp_builtin = function
   | ThreadIdx a  -> Printf.sprintf "threadIdx.%s" (pp_axis a)
   | BlockIdx  a  -> Printf.sprintf "blockIdx.%s"  (pp_axis a)
+  | GridDim   a  -> Printf.sprintf "gridDim.%s"  (pp_axis a)
   | ClusterCtaId -> "cluster_ctaid"
   | WarpId -> "warp_id"
   | LaneId -> "lane_id"

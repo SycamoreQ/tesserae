@@ -2,3 +2,8 @@
  (public_name tesserae)
  (name main)
  (libraries tesserae))
+
+(executable
+ (public_name dump_kernel)
+ (name dump_kernel)
+ (libraries tesserae_runtime tesserae_kernel))

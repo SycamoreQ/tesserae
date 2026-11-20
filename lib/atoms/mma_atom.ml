@@ -105,6 +105,14 @@ let sm100_128x128x16_f32f16f16f32 a_major b_major =
   ; d_type = Elemtype.Float32
   ; a_major; b_major }
 
+let sm100_128x256x16_f32f16f16f32 a_major b_major =
+  { arch = SM100; m = 128; n = 256; k = 16
+  ; a_type = Elemtype.Float16
+  ; b_type = Elemtype.Float16
+  ; c_type = Elemtype.Float32
+  ; d_type = Elemtype.Float32
+  ; a_major; b_major }
+
 let sm100_64x64x32_s32s8s8s32 a_major b_major =
   { arch = SM100; m = 64; n = 64; k = 32
   ; a_type = Elemtype.Int8

@@ -23,6 +23,12 @@ tesserae_image = (
     .add_local_dir(".", remote_path="/workspace", ignore=ignore_local_artifacts)
 )
 
+torch_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install("torch", extra_index_url="https://download.pytorch.org/whl/cu128")
+    .add_local_file("cublas_bench.py", remote_path="/workspace/cublas_bench.py")
+)
+
 app = modal.App("tesserae-gpu-runner")
 
 # Shared by every function.
@@ -83,18 +89,88 @@ def check_build():
     if _build():
         print("Build OK.")
 
+@app.function(image=torch_image, gpu="B200", timeout=900)
+def run_cublas(args: str = ""):
+    subprocess.run("nvidia-smi --query-gpu=name,clocks.max.sm,clocks.sm --format=csv", shell=True)
+    subprocess.run(f"python /workspace/cublas_bench.py {args}", shell=True)
+
 
 @app.local_entrypoint()
-def main(bench: bool = False, build_only: bool = False, bench_args: str = ""):
+def main(bench: bool = False, build_only: bool = False, dump: bool = False,
+         test_head: bool = False, test_logs: bool = False, cublas: bool = False,
+         bench_args: str = "", cublas_args: str = ""):
     """
     modal run run_modal.py                      # tests
     modal run run_modal.py --bench              # benchmark, default 4096^3
     modal run run_modal.py --bench --bench-args "-m 2048 -n 2048 -k 2048"
     modal run run_modal.py --build-only         # compile check, no GPU
+    modal run run_modal.py --cublas             # cuBLAS reference timing
+    modal run run_modal.py --cublas --cublas-args "--shapes 4096x4096x4104"
     """
     if build_only:
         check_build.remote()
+    elif test_head:
+        run_tesserae_tests_head.remote()
+    elif test_logs:
+        cat_test_logs.remote()
+    elif dump:
+        dump_kernel.remote()
+    elif cublas:
+        run_cublas.remote(cublas_args)
     elif bench:
         run_tesserae_bench.remote(bench_args)
     else:
         run_tesserae_tests.remote()
+
+
+@app.function(image=tesserae_image, timeout=900, env=TEST_ENV, gpu="B200")
+def cat_test_logs():
+    if not _build():
+        return
+    r = _sh("timeout 600s dune test lib/runtime 2>&1 | tail -5; "
+            "for f in /workspace/_build/default/lib/runtime/tests/_build/_tests/Runtime/gemm_blackwell_ragged.*.output; do "
+            "echo ===$f===; cat $f; done", capture_output=True, text=True)
+    print(r.stdout[-8000:])
+
+
+@app.function(image=tesserae_image, timeout=900, env=TEST_ENV, gpu="B200")
+def run_tesserae_tests_head():
+    """Runs dune test against the HEAD state (working-tree diff reversed)."""
+    if not _build():
+        return
+    p = _sh("patch -R -p1 < .head_patch.diff", capture_output=True, text=True)
+    if p.returncode != 0:
+        print("reverse patch failed:", p.stderr[-500:])
+        return
+    r = _sh("timeout 600s dune test")
+    print("HEAD tests:", "passed" if r.returncode == 0 else "FAILED")
+    _sh("patch -p1 < .head_patch.diff")
+
+
+@app.function(image=tesserae_image, timeout=600, env=BASE_ENV)
+def dump_kernel():
+    if not _build():
+        return
+    r = _sh("dune exec bin/dump_kernel.exe -- 4104 > /workspace/kernel_new.cu", capture_output=True, text=True)
+    if r.returncode != 0:
+        print("dump new failed:", r.stderr[-2000:])
+        return
+    p = _sh("patch -R -p1 < .head_patch.diff", capture_output=True, text=True)
+    if p.returncode != 0:
+        print("reverse patch failed:", p.stdout[-1000:], p.stderr[-1000:])
+        return
+    r = _sh("dune exec bin/dump_kernel.exe -- 4104 > /workspace/kernel_head.cu", capture_output=True, text=True)
+    if r.returncode != 0:
+        print("dump head failed:", r.stderr[-2000:])
+        return
+    p = _sh("patch -p1 < .head_patch.diff", capture_output=True, text=True)
+    if p.returncode != 0:
+        print("re-apply patch failed:", p.stderr[-1000:])
+    import re
+    def clean(path):
+        t = open(path).read()
+        # strip first "Generated kernel" marker duplication
+        return t
+    d = subprocess.run("diff /workspace/kernel_head.cu /workspace/kernel_new.cu", shell=True, capture_output=True, text=True)
+    print(d.stdout)
+    print(d.stderr)

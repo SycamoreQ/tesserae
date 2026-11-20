@@ -19,8 +19,13 @@ let debug_consumer_delay_us = 0
    and prints one line per role for a few CTAs with device printf.
    Meant for a single launch: run the benchmark with
      -warmup 1 -iters 1 -repeats 1
-   Set to false for real timings (it adds clock reads to every wait). *)
-let debug_pipeline_stats = false
+   Off by default: it reads clock64() inside every spin-wait iteration, which
+   inflates the waits themselves and depresses all timings. Enable with
+     TESSERAE_PIPELINE_STATS=1   *)
+let debug_pipeline_stats =
+  match Sys.getenv "TESSERAE_PIPELINE_STATS" with
+  | Some _ -> true
+  | None -> false
 
 (* only a handful of CTAs print, e.g. (0,0) (16,0) (0,16) (16,16) of a 32x32 grid *)
 let stats_cta_cond = "(blockIdx.x % 16 == 0 && blockIdx.y % 16 == 0)"
@@ -103,6 +108,9 @@ and emit_builtin = function
   | BlockIdx  X -> "blockIdx.x"
   | BlockIdx  Y -> "blockIdx.y"
   | BlockIdx  Z -> "blockIdx.z"
+  | GridDim   X -> "gridDim.x"
+  | GridDim   Y -> "gridDim.y"
+  | GridDim   Z -> "gridDim.z"
   | ClusterCtaId ->
     "([](){ uint32_t id; \
      asm volatile(\"mov.u32 %0, %%cluster_ctaid.x;\" : \"=r\"(id)); \
@@ -374,71 +382,96 @@ let emit_copy (k: tirix) (c : copy) : string =
             (phase 0) -> fence -> tcgen05.ld -> wait::ld -> convert and store.
             Each warp can only read TMEM lanes 32*(warp_id%%4) .. +31, so a warp
             stores rows 32*(warp_id%%4)+lane. Must run on all 32 lanes. *)
-         let n_regs = k.bm * k.bn / 128 in
-         if n_regs < 1 || n_regs > 128 || Int.bit_and n_regs (n_regs - 1) <> 0 then
-           failwith (Printf.sprintf
-             "emit_copy: tcgen05.ld 32x32b needs a power-of-two reg count <= 128, got %d" n_regs);
-         let outs = String.concat ~sep:", "
-           (List.init n_regs ~f:(fun i -> Printf.sprintf "\"=r\"(_t[%d])" i)) in
-         let regs = String.concat ~sep:", "
-           (List.init n_regs ~f:(fun i -> Printf.sprintf "%%%d" i)) in
-         (* Ragged shapes: when the kernel has M / N parameters, the C row stride
-            is N and the store is guarded against both edges. The tcgen05.ld
-            below stays UNguarded: it is .sync.aligned, so every lane of the warp
-            must execute it. Only the global stores are conditional. *)
-         let has_param name =
-           List.exists k.params ~f:(fun p -> String.equal p.param_name name) in
-         let ldc_s =
-           if has_param "N" then "N" else Printf.sprintf "(gridDim.y * %d)" k.bn in
-         let row_guard = if has_param "M" then "_grow < M" else "true" in
-         let _col_guard = if has_param "N" then "(_gcol + _i) < N" else "true" in
-         String.concat ~sep:"\n" [
-           "{";
-           Printf.sprintf "  const uint32_t _mbar = (uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar));";
-           (if debug_pipeline_stats then "  const long long _e0 = clock64();" else "");
-           "  asm volatile(";
-           "    \"{\\n\\t\"";
-           "    \".reg .pred p;\\n\\t\"";
-           "    \"MMA_DONE_WAIT:\\n\\t\"";
-           "    \"mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 p, [%0], %1, 0x989680;\\n\\t\"";
-           "    \"@!p bra MMA_DONE_WAIT;\\n\\t\"";
-           "    \"}\"";
-           "    :: \"r\"(_mbar), \"r\"(0u) : \"memory\");";
-           (if debug_pipeline_stats then "  const long long _e1 = clock64();" else "");
-           "  asm volatile(\"tcgen05.fence::after_thread_sync;\" ::: \"memory\");";
-           Printf.sprintf "  uint32_t _t[%d];" n_regs;
-           Printf.sprintf
-             "  asm volatile(\"tcgen05.ld.sync.aligned.32x32b.x%d.b32 {%s}, [%%%d];\" : %s : \"r\"(smem.tmem_addr) : \"memory\");"
-             n_regs regs n_regs outs;
-           "  asm volatile(\"tcgen05.wait::ld.sync.aligned;\" ::: \"memory\");";
-           Printf.sprintf "  const int _ldc = %s;" ldc_s;
-           Printf.sprintf
-             "  const int _grow = blockIdx.x * %d + 32 * (warp_id %% 4) + (int)(threadIdx.x %% 32);" k.bm;
-           Printf.sprintf "  const int _gcol = blockIdx.y * %d;" k.bn;
-           Printf.sprintf "  if (%s) {" row_guard;
-           "    #pragma unroll";
-           Printf.sprintf "    for (int _i = 0; _i < %d; _i += 4) {" n_regs;
-           (if has_param "N" then "      if ((_gcol + _i + 3) < N) {" else "      {");
-           "        float4 _val = make_float4(";
-           "            __uint_as_float(_t[_i]), __uint_as_float(_t[_i+1]),";
-           "            __uint_as_float(_t[_i+2]), __uint_as_float(_t[_i+3]));";
-           Printf.sprintf "        *reinterpret_cast<float4*>(&%s[(size_t)_grow * _ldc + _gcol + _i]) = _val;" dst.tensor_name;
-           "      } else {";
-           "        for (int _j = 0; _j < 4; _j++) {";
-           (if has_param "N" then
-              Printf.sprintf "          if ((_gcol + _i + _j) < N) %s[(size_t)_grow * _ldc + _gcol + _i + _j] = __uint_as_float(_t[_i+_j]);" dst.tensor_name
-            else
-              Printf.sprintf "          %s[(size_t)_grow * _ldc + _gcol + _i + _j] = __uint_as_float(_t[_i+_j]);" dst.tensor_name);
-           "        }";
-           "      }";
-           "    }";
-           "  }";
-           (if debug_pipeline_stats then
-              "  if (lane_id == 0 && warp_id == 2 && " ^ stats_cta_cond ^ ")\n"
-              ^ "    printf(\"[stats] cta=(%d,%d) epilogue wait_mma_done=%lld cyc  tcgen05.ld+store=%lld cyc\\n\", (int)blockIdx.x, (int)blockIdx.y, _e1 - _e0, clock64() - _e1);"
-            else "");
-           "}";
-         ]
+          let n_regs = k.bm * k.bn / 128 in
+          (* tcgen05.ld reads at most 128 columns per instruction; wider
+             accumulators (bn=256 -> 256 values/thread) are read in chunks,
+             each with its own tcgen05.ld from TMEM column chunk*128. *)
+          let chunk = Int.min 128 n_regs in
+          let n_chunks = (n_regs + chunk - 1) / chunk in
+          if n_regs < 1 || n_regs > 256 || Int.bit_and n_regs (n_regs - 1) <> 0
+             || (n_chunks > 1 && Int.bit_and chunk (chunk - 1) <> 0) then
+            failwith (Printf.sprintf
+              "emit_copy: tcgen05.ld 32x32b needs a power-of-two reg count <= 256, got %d" n_regs);
+          let outs = String.concat ~sep:", "
+            (List.init chunk ~f:(fun i -> Printf.sprintf "\"=r\"(_t[%d])" i)) in
+          let regs = String.concat ~sep:", "
+            (List.init chunk ~f:(fun i -> Printf.sprintf "%%%d" i)) in
+          (* Ragged shapes: when the kernel has M / N parameters, the C row stride
+             is N and the store is guarded against both edges. The tcgen05.ld
+             below stays UNguarded: it is .sync.aligned, so every lane of the warp
+             must execute it. Only the global stores are conditional. *)
+          let has_param name =
+            List.exists k.params ~f:(fun p -> String.equal p.param_name name) in
+          let ldc_s =
+            if has_param "N" then "N" else Printf.sprintf "(gridDim.y * %d)" k.bn in
+           let row_guard = if has_param "M" then "_grow < M" else "true" in
+           (* Row base must match the A-tile row loaded for this CTA/tile pair
+              (tma_coord_m set by the lowering); falls back to one tile per CTA. *)
+           let row_base = match c.tma_coord_m with
+             | Some e -> Printf.sprintf "((int)(%s))" (emit_expr e)
+             | None -> Printf.sprintf "blockIdx.x * %d" k.bm
+           in
+          let body = String.concat ~sep:"\n" [
+             (if debug_pipeline_stats then "  const long long _e1 = clock64();" else "");
+             "  asm volatile(\"tcgen05.fence::after_thread_sync;\" ::: \"memory\");";
+             Printf.sprintf "  uint32_t _t[%d];" chunk;
+             Printf.sprintf
+               "  asm volatile(\"tcgen05.ld.sync.aligned.32x32b.x%d.b32 {%s}, [%%%d];\" : %s : \"r\"(smem.tmem_addr[tile %% 2]%s) : \"memory\");"
+               chunk regs chunk outs
+               (if n_chunks > 1 then Printf.sprintf " + _c * %d" chunk else "");
+             "  asm volatile(\"tcgen05.wait::ld.sync.aligned;\" ::: \"memory\");";
+             Printf.sprintf "  const int _ldc = %s;" ldc_s;
+              Printf.sprintf
+                "  const int _grow = %s + 32 * (warp_id %% 4) + (int)(threadIdx.x %% 32);" row_base;
+             Printf.sprintf "  const int _gcol = blockIdx.y * %d%s;" k.bn
+               (if n_chunks > 1 then Printf.sprintf " + _c * %d" chunk else "");
+             Printf.sprintf "  if (%s) {" row_guard;
+             "    #pragma unroll";
+             Printf.sprintf "    for (int _i = 0; _i < %d; _i += 4) {" chunk;
+              (* float4 needs the 16-byte-aligned case: the element offset
+                 (_grow * _ldc + _gcol + _i) must be a multiple of 4. With a
+                 runtime row stride (_ldc = N) that only holds when N % 4 == 0,
+                 otherwise the vector store faults (Xid 13 misaligned address). *)
+              (if has_param "N" then
+                 "      if (((_gcol + _i + 3) < N) && ((N % 4) == 0)) {"
+               else "      {");
+             "        float4 _val = make_float4(";
+             "            __uint_as_float(_t[_i]), __uint_as_float(_t[_i+1]),";
+             "            __uint_as_float(_t[_i+2]), __uint_as_float(_t[_i+3]));";
+             Printf.sprintf "        *reinterpret_cast<float4*>(&%s[(size_t)_grow * _ldc + _gcol + _i]) = _val;" dst.tensor_name;
+             "      } else {";
+             "        for (int _j = 0; _j < 4; _j++) {";
+             (if has_param "N" then
+                Printf.sprintf "          if ((_gcol + _i + _j) < N) %s[(size_t)_grow * _ldc + _gcol + _i + _j] = __uint_as_float(_t[_i+_j]);" dst.tensor_name
+              else
+                Printf.sprintf "          %s[(size_t)_grow * _ldc + _gcol + _i + _j] = __uint_as_float(_t[_i+_j]);" dst.tensor_name);
+             "        }";
+             "      }";
+             "    }";
+             "  }";
+             (if debug_pipeline_stats then
+                "  if (lane_id == 0 && warp_id == 2 && " ^ stats_cta_cond ^ ")\n"
+                ^ "    printf(\"[stats] cta=(%d,%d) epilogue wait_mma_done=%lld cyc  tcgen05.ld+store=%lld cyc\\n\", (int)blockIdx.x, (int)blockIdx.y, _e1 - _e0, clock64() - _e1);"
+              else "");
+           ] in
+          String.concat ~sep:"\n" [
+            "{";
+            Printf.sprintf "  const uint32_t _mbar = (uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar) + (tile %% 2) * sizeof(uint64_t));";
+            (if debug_pipeline_stats then "  const long long _e0 = clock64();" else "");
+            "  asm volatile(";
+            "    \"{\\n\\t\"";
+            "    \".reg .pred p;\\n\\t\"";
+            "    \"MMA_DONE_WAIT:\\n\\t\"";
+            "    \"mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 p, [%0], %1, 0x989680;\\n\\t\"";
+            "    \"@!p bra MMA_DONE_WAIT;\\n\\t\"";
+            "    \"}\"";
+            "    :: \"r\"(_mbar), \"r\"(0u) : \"memory\");";
+            (if n_chunks > 1 then
+               Printf.sprintf "  #pragma unroll\n  for (int _c = 0; _c < %d; _c++) {\n%s\n  }"
+                 n_chunks body
+             else body);
+            "}"
+          ]
        | Memspace.Global ->
          let n_regs = k.bm * k.bn / 128 in
          Printf.sprintf
@@ -807,7 +840,7 @@ let emit_mma (m : mma_desc) : string =
        - a single thread issues the instruction *)
     String.concat ~sep:"\n" [
       "{";
-      "  uint32_t tmem_addr = smem.tmem_addr;";
+      "  uint32_t tmem_addr = smem.tmem_addr[tile % 2];";
       Printf.sprintf "  uint64_t desc_a = %s;" desc_a;
       Printf.sprintf "  uint64_t desc_b = %s;" desc_b;
       Printf.sprintf "  uint32_t idesc  = 0x%08xu;" idesc;
@@ -887,7 +920,7 @@ let emit_op (k:tirix) = function
     Printf.sprintf
       "asm volatile(\"tcgen05.dealloc.cta_group::1.sync.aligned.b32 \
        %%0, %d;\" \
-       :: \"r\"(smem.%s) : \"memory\");"
+       :: \"r\"(smem.%s[0]) : \"memory\");"
       col_count addr_var.var_name
 
   | TmemLoad { dst_vars; src_addr; col_offset } ->
@@ -974,13 +1007,22 @@ let rec emit_stmt (k: tirix) ?(depth = 0) ?stage_depth  (s : stmt) : string =
     in
     let stage_inc = ""
     in
+    (* Each accumulator tile starts a fresh TMEM buffer: the first MMA of a
+       tile must overwrite (enable_input_d = 0), not accumulate on top of the
+       previous tile's results. *)
+    let acc_reset =
+      if String.equal var.var_name "tile"
+         && Poly.(k.family = Kernel_desc.Blackwell)
+      then Printf.sprintf "%s  _mma_acc = 0u;\n" ind
+      else ""
+    in
     Printf.sprintf
-      "%s%sfor (%s %s = %s; %s < %s; %s += %s) {\n%s%s\n%s}"
+      "%s%sfor (%s %s = %s; %s < %s; %s += %s) {\n%s%s%s\n%s}"
       pragma ind
       (emit_packed_scalar var.var_type) var.var_name (emit_expr start)
       var.var_name (emit_expr stop)
       var.var_name (emit_expr step)
-      (emit_stmts k ~depth:(depth+1) ?stage_depth body)
+      acc_reset (emit_stmts k ~depth:(depth+1) ?stage_depth body)
       stage_inc
       ind
 
@@ -1059,7 +1101,8 @@ let rec emit_stmt (k: tirix) ?(depth = 0) ?stage_depth  (s : stmt) : string =
     let tmem_decl =
       match k.family with
       | Kernel_desc.Blackwell ->
-        ["  __align__(16) uint32_t tmem_addr;"; "  __align__(8) uint64_t mma_done_mbar;"]
+        [ "  __align__(16) uint32_t tmem_addr[2];"
+        ; "  __align__(8) uint64_t mma_done_mbar[2];" ]
       | _ -> []
     in
     let all = tensor_decls @ mbar_decls @ tmem_decl in
@@ -1194,19 +1237,25 @@ let emit_mbar_init_loop (k : tirix) : string =
     in
     let done_init =
       if Poly.(k.family = Kernel_desc.Blackwell) then
-        "    asm volatile(\"mbarrier.init.shared.b64 [%0], 1;\" :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.mma_done_mbar)) : \"memory\");\n"
+        "    for(int i=0; i<2; i++) { asm volatile(\"mbarrier.init.shared.b64 [%0], 1;\" :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar) + i * sizeof(uint64_t))) : \"memory\"); }\n"
       else ""
     in
     let full_count = max 1 (count_arrives k.body) in  (* 2 for GEMM, 1 for copy *)
     let tmem_alloc_s =
       if Poly.(k.family = Kernel_desc.Blackwell) && not (has_tmem_alloc k.body) then
+        (* One TMEM buffer per accumulator tile: tcgen05.alloc stores the base
+           address of each region separately, so both entries of tmem_addr are
+           valid. (A single alloc only writes tmem_addr[0]; using tmem_addr[1]
+           without a second alloc is an invalid TMEM address and faults.) *)
         Printf.sprintf
           "  if (warp_id == 0) {\n\
           \    asm volatile(\"tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%%0], %d;\"\n\
-          \      :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.tmem_addr)) : \"memory\");\n\
+          \      :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.tmem_addr[0])) : \"memory\");\n\
+          \    asm volatile(\"tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%%0], %d;\"\n\
+          \      :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.tmem_addr[1])) : \"memory\");\n\
           \    asm volatile(\"tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;\" ::: \"memory\");\n\
           \  }\n"
-          k.bn
+          k.bn k.bn
       else ""
     in
     Printf.sprintf
@@ -1275,7 +1324,7 @@ let emit_mma_done_signal () : string =
   String.concat ~sep:"\n" [
     "  if ((threadIdx.x % 32) == 0) {";
     "    asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];\"";
-    "      :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar))) : \"memory\");";
+    "      :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar) + (tile % 2) * sizeof(uint64_t))) : \"memory\");";
     "  }";
   ]
 
@@ -1316,7 +1365,29 @@ let emit_kernel_func (k : tirix) : string =
     | _ -> (role, body, []))
   in
   let epi_stores = List.concat_map split ~f:(fun (_, _, st) -> st) in
-  let need_epilogue = is_bw && not (List.is_empty epi_stores) in
+  (* The MMA warp must signal mma_done_mbar whenever there are epilogue-side
+     acc stores — either extracted ones or a dedicated Epilogue warp group in
+     the IR (which keeps its own stores, so epi_stores is empty). Without this
+     the epilogue warps wait on a barrier that is never arrived at. *)
+  let has_epi_warps =
+    List.exists k.cluster.Cluster.warp_roles
+      ~f:(fun (_, r) -> Poly.(r = Cluster.Epilogue)) in
+  let tile_var = { Tirix.var_name = "tile"; var_id = 999; var_type = Tirix.Scalar Tirix.S32; var_mutable = true } in
+  let epi_stores =
+    if is_bw && not (List.is_empty epi_stores) then
+      [ Tirix.SFor {
+        var = tile_var;
+        start = Tirix.Const (Tirix.S32, 0l);
+        stop = Tirix.Const (Tirix.S32, 2l);
+        step = Tirix.Const (Tirix.S32, 1l);
+        dir = Tirix.Upto;
+        unroll = false;
+        body = epi_stores;
+      } ]
+    else epi_stores
+  in
+  let need_epilogue =
+    is_bw && (has_epi_warps || not (List.is_empty epi_stores)) in
   let warp_cases = List.map split ~f:(fun (role, body, _) ->
     let warp_ids = List.filter_map k.cluster.Cluster.warp_roles
       ~f:(fun (id, r) -> if Poly.(r = role) then Some id else None)
@@ -1336,8 +1407,20 @@ let emit_kernel_func (k : tirix) : string =
     in
     let body_s = emit_stmts k ~depth:2 ?stage_depth:sd body in
     let body_s =
-      if need_epilogue && Poly.(role = Cluster.Consumer)
-      then body_s ^ "\n" ^ emit_mma_done_signal ()
+      if need_epilogue && Poly.(role = Cluster.Consumer) then
+        match body with
+        | [Tirix.SFor { var; start; stop; step; dir = _dir; unroll = _unroll; body = loop_body }]
+          when String.equal var.var_name "tile" ->
+          let ind = indent 2 in
+          let loop_s = emit_stmts k ~depth:3 ?stage_depth:sd loop_body in
+          Printf.sprintf "%sfor (%s %s = %s; %s < %s; %s += %s) {\n%s%s\n%s%s\n%s}"
+            ind
+            (emit_packed_scalar var.var_type) var.var_name (emit_expr start)
+            var.var_name (emit_expr stop)
+            var.var_name (emit_expr step)
+            "    _mma_acc = 0u;" loop_s ind (emit_mma_done_signal ()) ind
+        | _ ->
+          body_s ^ "\n" ^ emit_mma_done_signal ()
       else body_s
     in
     let body_s =
@@ -1355,7 +1438,10 @@ let emit_kernel_func (k : tirix) : string =
     Printf.sprintf "if (%s) {\n%s%s\n}" cond prefix body_s)
   in
   let epilogue_case =
-    if need_epilogue then
+    (* Only when the emitter owns extracted stores; a dedicated Epilogue warp
+       group already emitted its own case above, and re-emitting it (even
+       empty) would duplicate the branch. *)
+    if not (List.is_empty epi_stores) then
       let ids = epilogue_warp_ids k in
       let cond = String.concat ~sep:" || "
         (List.map ids ~f:(Printf.sprintf "warp_id == %d")) in
@@ -1388,9 +1474,11 @@ let emit_kernel_func (k : tirix) : string =
         "  __syncthreads();\n\
         \  if (warp_id == 0) {\n\
         \    asm volatile(\"tcgen05.dealloc.cta_group::1.sync.aligned.b32 %%0, %d;\"\n\
-        \      :: \"r\"(smem.tmem_addr) : \"memory\");\n\
+        \      :: \"r\"(smem.tmem_addr[0]) : \"memory\");\n\
+        \    asm volatile(\"tcgen05.dealloc.cta_group::1.sync.aligned.b32 %%0, %d;\"\n\
+        \      :: \"r\"(smem.tmem_addr[1]) : \"memory\");\n\
         \  }\n"
-        k.bn
+        k.bn k.bn
     else ""
   in
 
@@ -1436,7 +1524,7 @@ let emit_host_launcher (k : tirix) : string =
   let has_m = List.exists k.params ~f:(fun p -> String.equal p.param_name "M") in
   let has_n = List.exists k.params ~f:(fun p -> String.equal p.param_name "N") in
   let grid_x = if has_m
-    then Printf.sprintf "(M + %d - 1) / %d" k.bm k.bm
+    then Printf.sprintf "((M + %d - 1) / %d) / 2" k.bm k.bm
     else "1" in
   let grid_y = if has_n
     then Printf.sprintf "(N + %d - 1) / %d" k.bn k.bn

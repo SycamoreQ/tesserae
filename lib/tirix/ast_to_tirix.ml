@@ -13,6 +13,7 @@ type ctx = {
   empty_mbar : Tirix.var option;
   pipeline_depth : int;
   bm : int;
+  bn : int;
   bk : int;
   elem_bytes : int;
   roles : (int * Cluster.warp_role) list;
@@ -25,15 +26,33 @@ type ctx = {
 
 type loop_ctx = {
   k_var : var option;
+  (* Trip count of the innermost k loop, needed to make stage/parity
+     continuous across tile loops: global k = tile * k_stop + k. *)
+  k_stop : int option;
   m_var : var option;
   n_var : var option;
   stage_var : var option;
+  tile_var : var option;
   in_warp_group : bool;
 }
 
 let empty_loop_ctx =
-  { k_var = None; m_var = None; n_var = None; stage_var = None
-  ; in_warp_group = false }
+  { k_var = None; k_stop = None; m_var = None; n_var = None; stage_var = None
+  ; tile_var = None; in_warp_group = false }
+
+(* The pipeline's mbarrier phase state survives across iterations of an outer
+   tile loop, so every stage/parity expression must be derived from the global
+   k index. Deriving them from the (per-tile-reset) loop variable desyncs the
+   waits whenever k_tiles is not a multiple of the pipeline depth, wedging the
+   producer and consumer on each other's barriers. *)
+let global_k (loop_ctx : loop_ctx) (kv : var) : int32 Tirix.expr =
+  match loop_ctx.tile_var, loop_ctx.k_stop with
+  | Some tv, Some ks ->
+    Tirix.Arith (Tirix.Arith.Add,
+      Tirix.Arith (Tirix.Arith.Mul, Tirix.Var tv,
+        Tirix.Const (Tirix.S32, Int32.of_int_exn ks)),
+      Tirix.Var kv)
+  | _ -> Tirix.Var kv
 
 type packed_space = Space : 'a Memspace.space -> packed_space
 type packed_elem = Elem : 'a Elemtype.t -> packed_elem
@@ -383,28 +402,45 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
 
     (* Each CTA owns one output tile: with no explicit m/n loop, the tile row
        of A comes from blockIdx.x and the tile row of B (output column) from
-       blockIdx.y. *)
+       blockIdx.y. With an outer tile loop, tile t of CTA bx owns row
+       (bx + t * gridDim.x): gridDim.x is the per-cluster CTA row count. *)
     let block_coord builtin strip =
-      Some (Tirix.Arith (Tirix.Arith.Mul, Tirix.Builtin builtin,
+      let base =
+        match loop_ctx.tile_var, builtin with
+        | Some tv, Tirix.BlockIdx Tirix.X ->
+          Tirix.Arith (Tirix.Arith.Add, Tirix.Builtin builtin,
+            Tirix.Arith (Tirix.Arith.Mul, Tirix.Var tv,
+              Tirix.Builtin (Tirix.GridDim Tirix.X)))
+        | _ -> Tirix.Builtin builtin
+      in
+      Some (Tirix.Arith (Tirix.Arith.Mul, base,
               Tirix.Const (Tirix.S32, Int32.of_int_exn strip)))
+    in
+
+    (* TMA k coordinate stays LOCAL: every output tile re-reduces over the
+       full K range, so the coordinate restarts with the k loop. Only the
+       stage rotation and the wait parities (below) use the global k index,
+       because those track mbarrier phase state that persists across tiles. *)
+    let tma_coord_k =
+      tma_coord_scaled loop_ctx.k_var dst_expr (fun s -> s.Kernel_ast.k)
     in
     let coord_m =
       match tma_coord_scaled loop_ctx.m_var dst_expr (fun s -> s.Kernel_ast.m) with
       | Some _ as c -> c
       | None ->
         (match dst_expr with
-         | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.m > 0 ->
-           block_coord (Tirix.BlockIdx Tirix.X) shape.Kernel_ast.m
-         | _ -> None)
+        | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.m > 0 ->
+          block_coord (Tirix.BlockIdx Tirix.X) shape.Kernel_ast.m
+        | _ -> None)
     in
     let coord_n =
       match tma_coord_scaled loop_ctx.n_var dst_expr (fun s -> s.Kernel_ast.n) with
       | Some _ as c -> c
       | None ->
         (match dst_expr with
-         | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.n > 0 ->
-           block_coord (Tirix.BlockIdx Tirix.Y) shape.Kernel_ast.n
-         | _ -> None)
+        | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.n > 0 ->
+          block_coord (Tirix.BlockIdx Tirix.Y) shape.Kernel_ast.n
+        | _ -> None)
     in
 
     let copy_stmt = Tirix.SOp (Tirix.Copy {
@@ -413,7 +449,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
       ; dst_tensor = dst
       ; pred_expr = pred
       ; mbar_var
-      ; tma_coord_k = tma_coord_scaled loop_ctx.k_var dst_expr (fun s -> s.Kernel_ast.k)
+      ; tma_coord_k = tma_coord_k
       ; tma_coord_m = coord_m
       ; tma_coord_n = coord_n
       ; stage_var = loop_ctx.stage_var
@@ -440,14 +476,15 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
     in
 
     (* Warp-specialised producer: before refilling stage k % depth, wait until
-       the consumers released it. Round r = k / depth needs the (r-1)th release,
-       i.e. parity (r + 1) % 2. Round 0 passes immediately on a fresh barrier. *)
+       the consumers released it. Round r = g / depth (g = global k, so this
+       stays valid across tile loops) needs the (r-1)th release, i.e. parity
+       (r + 1) % 2. Round 0 passes immediately on a fresh barrier. *)
     let empty_wait = match ctx.empty_mbar, loop_ctx.k_var with
       | Some empty, Some kv when is_tma && loop_ctx.in_warp_group && not skip_empty_wait ->
         let phase =
           Tirix.Arith (Tirix.Arith.Mod,
             Tirix.Arith (Tirix.Arith.Add,
-              Tirix.Arith (Tirix.Arith.Div, Tirix.Var kv,
+              Tirix.Arith (Tirix.Arith.Div, global_k loop_ctx kv,
                 Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
               Tirix.Const (Tirix.S32, 1l)),
             Tirix.Const (Tirix.S32, 2l))
@@ -485,7 +522,22 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
       ; pred_expr = pred
       ; mbar_var = None
       ; tma_coord_k = tma_coord_scaled loop_ctx.k_var src_expr (fun s -> s.Kernel_ast.k)
-      ; tma_coord_m = tma_coord_scaled loop_ctx.m_var src_expr (fun s -> s.Kernel_ast.m)
+      ; tma_coord_m = (match tma_coord_scaled loop_ctx.m_var src_expr (fun s -> s.Kernel_ast.m) with
+          | Some _ as c -> c
+          | None ->
+            (* Epilogue acc stores have no m loop: the row is the CTA's tile
+               row, offset by tile * gridDim.x like the A loads above. Without
+               this the emitter's row_base fallback drops the tile offset and
+               every tile writes over tile 0's output rows. *)
+            (match loop_ctx.tile_var with
+             | Some tv ->
+               Some (Tirix.Arith (Tirix.Arith.Mul,
+                 Tirix.Arith (Tirix.Arith.Add,
+                   Tirix.Builtin (Tirix.BlockIdx Tirix.X),
+                   Tirix.Arith (Tirix.Arith.Mul, Tirix.Var tv,
+                     Tirix.Builtin (Tirix.GridDim Tirix.X))),
+                 Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.bm)))
+             | None -> None))
       ; tma_coord_n = tma_coord_scaled loop_ctx.n_var src_expr (fun s -> s.Kernel_ast.n)
       ; stage_var = loop_ctx.stage_var
       }) in
@@ -504,7 +556,7 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
     let kind = infer_mma_kind ctx in
     let mma_stmt = Tirix.SOp (Tirix.Mma {
       mma_kind    = kind
-    ; mma_atom    = Tirix.default_atom_for_kind kind
+    ; mma_atom    = Tirix.default_atom_for_tile ~bn:ctx.bn kind
     ; tensor_a    = lookup_tensor ctx a_expr
     ; tensor_b    = lookup_tensor ctx b_expr
     ; tensor_c    = lookup_tensor ctx c_expr
@@ -513,13 +565,14 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
     ; accum_flag  = true
     }) in
     (* Warp-specialised consumer: wait until the producer's TMA for this stage
-       has landed. Phase flips every pipeline_depth iterations. The emitter
+       has landed. Phase flips every pipeline_depth iterations of the global k
+       index (tile loops included), matching the producer. The emitter
        addresses full_mbar[stage]. *)
     (match ctx.full_mbar, loop_ctx.k_var, loop_ctx.stage_var with
      | Some mbar, Some kv, Some _ when loop_ctx.in_warp_group ->
        let phase =
          Tirix.Arith (Tirix.Arith.Mod,
-           Tirix.Arith (Tirix.Arith.Div, Tirix.Var kv,
+           Tirix.Arith (Tirix.Arith.Div, global_k loop_ctx kv,
              Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
            Tirix.Const (Tirix.S32, 2l))
        in
@@ -568,19 +621,24 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
       | "k" | "k_loop" | "k_tile"  ->
         { loop_ctx with
           k_var = Some loop_var
+        ; k_stop = Some stop_val
         ; stage_var = (match stage_opt with
                        | Some _ -> stage_opt
                        | None -> loop_ctx.stage_var) }
       | "m" | "row"   | "block_m"  -> { loop_ctx with m_var = Some loop_var }
       | "n" | "col"   | "block_n"  -> { loop_ctx with n_var = Some loop_var }
       | "stage" | "s"              -> { loop_ctx with stage_var = Some loop_var }
+      | "tile"                      -> { loop_ctx with tile_var = Some loop_var }
       | _                          -> loop_ctx
     in
     let stage_assign = match stage_opt with
       | None -> []
       | Some sv ->
+        (* Stage rotation follows the global k index so it stays continuous
+           across tile loops; otherwise the stage/parity bookkeeping desyncs
+           at tile boundaries when k_tiles is not a multiple of the depth. *)
         [ Tirix.SAssign (sv,
-            Tirix.Expr (Tirix.Arith (Tirix.Arith.Mod, Tirix.Var loop_var,
+            Tirix.Expr (Tirix.Arith (Tirix.Arith.Mod, global_k new_loop_ctx loop_var,
               Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)))) ]
     in
     let lowered_body = convert_stmts_with_skip ctx new_loop_ctx body_stmts in
@@ -687,6 +745,7 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   ; empty_mbar = empty_mbar_var
   ; pipeline_depth
   ; bm = k.Kernel_ast.tile.Kernel_ast.m
+  ; bn = k.Kernel_ast.tile.Kernel_ast.n
   ; bk = k.Kernel_ast.tile.Kernel_ast.k
   ; elem_bytes = elem_byte_width k.Kernel_ast.elem
   ; roles = cluster.Cluster.warp_roles

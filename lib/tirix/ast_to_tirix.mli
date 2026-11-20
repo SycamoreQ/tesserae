@@ -11,6 +11,7 @@ type ctx = {
   empty_mbar : Tirix.var option;
   pipeline_depth : int;
   bm : int;
+  bn : int;
   bk : int;
   elem_bytes : int;
   roles : (int * Tesserae_pipeline.Cluster.warp_role) list;

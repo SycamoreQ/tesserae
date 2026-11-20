@@ -66,6 +66,7 @@ type axis = X | Y | Z
 type gpu_builtin =
   | ThreadIdx of axis
   | BlockIdx  of axis
+  | GridDim   of axis
   | ClusterCtaId
   | WarpId
   | LaneId
@@ -169,6 +170,17 @@ let default_atom_for_kind = function
     Atom100 (Tesserae_atoms.Mma_atom.sm100_128x128x16_f32f16f16f32
                Tesserae_atoms.Mma_atom.ColMajor
                Tesserae_atoms.Mma_atom.RowMajor)
+
+(* tcgen05 MMA atom sized to the CTA's output tile: the atom N must cover the
+   B-tile width so one MMA consumes the whole stage (tcgen05 supports N up to
+   256). Falls back to the plain default for other archs / tile sizes. *)
+let default_atom_for_tile ~(bn : int) (kind : mma_kind) : packed_mma_atom =
+  match kind, bn with
+  | Sm100Tcgen05, 256 ->
+    Atom100 (Tesserae_atoms.Mma_atom.sm100_128x256x16_f32f16f16f32
+               Tesserae_atoms.Mma_atom.ColMajor
+               Tesserae_atoms.Mma_atom.RowMajor)
+  | _ -> default_atom_for_kind kind
 
 type mma_desc = {
   mma_kind : mma_kind;

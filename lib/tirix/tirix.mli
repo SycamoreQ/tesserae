@@ -63,6 +63,7 @@ type axis = X | Y | Z
 type gpu_builtin =
   | ThreadIdx of axis
   | BlockIdx  of axis
+  | GridDim   of axis
   | ClusterCtaId
   | WarpId
   | LaneId
@@ -155,6 +156,7 @@ type packed_mma_atom =
   | Atom100 : (Mma_atom.sm100, 'a, 'b, 'c, 'd) Mma_atom.t -> packed_mma_atom
 
 val default_atom_for_kind : mma_kind -> packed_mma_atom
+val default_atom_for_tile : bn:int -> mma_kind -> packed_mma_atom
 
 type mma_desc = {
   mma_kind: mma_kind;

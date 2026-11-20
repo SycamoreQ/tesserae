@@ -16,9 +16,10 @@ module Blackwell_gemm = Tesserae_blackwell_kernels.Gemm_warpspec
 let ceil_div a b = (a + b - 1) / b
 let now () = Unix.gettimeofday ()
 
-(* L2-promotion-parameterised descriptor creation. 0=NONE, 1=128B, 2=256B. *)
+(* L2-promotion-parameterised descriptor creation. 0=NONE, 1=128B, 2=256B.
+   The 4th arg is the TMA box height (tile rows) for the operand. *)
 external create_tma_descriptor_sw128_l2 :
-  nativeint -> int -> int -> int -> nativeint
+  nativeint -> int -> int -> int -> int -> nativeint
   = "caml_create_tma_descriptor_sw128_l2"
 
 let l2_name = function
@@ -28,9 +29,10 @@ let l2_name = function
   | m -> Stdlib.Format.asprintf "L2_%d" m
 
 (* Returns a list of (l2_mode, best_secs, median_secs, bad_samples). *)
-let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats ~multicast () =
+let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats
+    ~multicast ~bn () =
   if k_total % 8 <> 0 then failwith "k must be a multiple of 8";
-  let gy = ceil_div n 128 in
+  let gy = ceil_div n bn in
   let gx = let g = ceil_div m 128 in if g % 2 = 0 then g else g + 1 in
 
   let host_a = Array.init (m * k_total) ~f:(fun i ->
@@ -49,7 +51,7 @@ let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats
   Gpu_buffer.copy_from_host buf_c (Array.create ~len:c_len Float.nan);
 
   let result =
-    match Compile.to_ptx (Blackwell_gemm.gemm_blackwell_ws ~k_total ~stages ~multicast ()) with
+    match Compile.to_ptx (Blackwell_gemm.gemm_blackwell_ws ~k_total ~stages ~multicast ~bn ()) with
     | Error e ->
       failwith (Stdlib.Format.asprintf "Compilation failed: %a" Compile.pp_error e)
     | Ok result ->
@@ -59,21 +61,23 @@ let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats
       in
       let module_ = Kernel_launch.load_ptx ptx in
       let func = Kernel_launch.get_function module_ "gemm_blackwell_ws" in
-      let smem_bytes = stages * 128 * 64 * 2 * 2 + (2 * stages * 8 + 256) in
+      (* A stage: 128*64 f16, B stage: bn*64 f16; plus full/empty/mma_done
+         barriers and the TMEM address slots. *)
+      let smem_bytes = stages * (128 * 64 * 2 + bn * 64 * 2) + (2 * stages * 8 + 256) in
 
-      Stdio.printf "shape M=%d N=%d K=%d stages=%d smem=%d B grid=(%d,%d) CTAs=%d\n%!"
-        m n k_total stages smem_bytes gx gy (gx * gy);
+      Stdio.printf "shape M=%d N=%d K=%d stages=%d bn=%d smem=%d B grid=(%d,%d) CTAs=%d\n%!"
+        m n k_total stages bn smem_bytes gx gy (gx * gy);
 
       (* Compile once, loop L2 modes here. PTX is identical; only descriptors differ. *)
       let runs = List.map l2_modes ~f:(fun l2_mode ->
         let tma_a = create_tma_descriptor_sw128_l2
-          (Gpu_buffer.ptr buf_a) m k_total l2_mode in
+          (Gpu_buffer.ptr buf_a) m k_total 128 l2_mode in
         let tma_b = create_tma_descriptor_sw128_l2
-          (Gpu_buffer.ptr buf_b) n k_total l2_mode in
+          (Gpu_buffer.ptr buf_b) n k_total bn l2_mode in
 
         let launch () =
           Kernel_launch.launch func
-            ~grid:(gx, gy, 1)
+            ~grid:(gx / 2, gy, 1)
             ~block:(192, 1, 1)
             ~smem:smem_bytes
             ~cluster:(2, 1, 1)
@@ -140,6 +144,7 @@ let () =
   let peak = ref 0.0 in
   let l2_spec = ref "128" in
   let multicast = ref false in
+  let bn = ref 256 in
   let spec = [
     ("-m", Stdlib.Arg.Set_int m, " rows of A and C (default 4096)");
     ("-n", Stdlib.Arg.Set_int n, " rows of B / columns of C (default 4096)");
@@ -154,6 +159,8 @@ let () =
      " comma-separated L2 promotion modes: none,128,256 (default: 128). " ^
      "Multiple values run an in-process ablation, e.g. -l2 none,128,256");
     ("-multicast", Stdlib.Arg.Set multicast, " enable TMA multicast for B (default false)");
+    ("-bn", Stdlib.Arg.Set_int bn,
+     " B tile width / CTA output columns, 128 or 256 (default 256)");
     ("-peak", Stdlib.Arg.Set_float peak,
      " dense f16 peak TFLOP/s of your GPU, to print percent of peak (optional)");
   ] in
@@ -176,7 +183,8 @@ let () =
   let rows =
     List.map k_list ~f:(fun k_total ->
       let runs = bench_shape ~l2_modes ~m ~n ~k_total ~stages:!stages
-                   ~warmup:!warmup ~iters:!iters ~repeats:!repeats ~multicast:!multicast () in
+                   ~warmup:!warmup ~iters:!iters ~repeats:!repeats ~multicast:!multicast
+                   ~bn:!bn () in
       List.map runs ~f:(fun (l2_mode, best, median, bad) ->
         let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k_total in
         let tf t = flops /. t /. 1e12 in
@@ -191,7 +199,7 @@ let () =
     |> List.concat
   in
 
-  Stdio.printf "\nsummary (M=%d N=%d stages=%d)\n" m n !stages;
+  Stdio.printf "\nsummary (M=%d N=%d stages=%d bn=%d)\n" m n !stages !bn;
   Stdio.printf "     K | L2 mode |  best ms | median ms | TFLOP/s | wrong\n";
   List.iter rows ~f:(fun (k_total, l2_mode, best, median, bad) ->
     let flops = 2.0 *. Float.of_int m *. Float.of_int n *. Float.of_int k_total in

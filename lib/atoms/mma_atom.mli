@@ -99,6 +99,12 @@ val sm100_128x128x16_f32f16f16f32 : major -> major ->
    Elemtype.float16, Elemtype.float16,
    Elemtype.float32, Elemtype.float32) t
 
+(** SM100 128x256x16 F16 umma — wide-N atom for 128x256 output tiles *)
+val sm100_128x256x16_f32f16f16f32 : major -> major ->
+  (sm100,
+   Elemtype.float16, Elemtype.float16,
+   Elemtype.float32, Elemtype.float32) t
+
 (** SM100 64x64x32 INT8 umma *)
 val sm100_64x64x32_s32s8s8s32 : major -> major ->
   (sm100,

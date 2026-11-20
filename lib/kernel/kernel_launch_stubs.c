@@ -463,11 +463,12 @@ CAMLprim value caml_tensor_map_encode_2d_sw128_bytecode(value* argv, int argc) {
 /* L2-promotion-parameterised variant of create_tma_descriptor_sw128.
    l2_mode: 0 = NONE, 1 = 128B, 2 = 256B. Descriptor layout otherwise identical. */
 CAMLprim value caml_create_tma_descriptor_sw128_l2(
-    value ptr_val, value rows_val, value cols_val, value l2_mode_val)
+    value ptr_val, value rows_val, value cols_val, value tile_rows_val,
+    value l2_mode_val)
 {
-  CAMLparam4(ptr_val, rows_val, cols_val, l2_mode_val);
+  CAMLparam5(ptr_val, rows_val, cols_val, tile_rows_val, l2_mode_val);
 
-  const int tile_rows = 128;
+  const int tile_rows = Int_val(tile_rows_val);
   const int tile_cols = 64;
 
   CUtensorMap host_tmap;

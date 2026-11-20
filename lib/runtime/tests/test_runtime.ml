@@ -192,7 +192,9 @@ let ceil_div a b = (a + b - 1) / b
 let gemm_blackwell_ws_tiled ~m ~n ~k_total =
   if k_total % 8 <> 0 then
     Alcotest.failf "k_total must be a multiple of 8 (got %d)" k_total;
-  let gy = ceil_div n 128 in
+  (* The kernel's CTA output tile is 128 x 256 (gemm_warpspec default bn=256). *)
+  let bn = 256 in
+  let gy = ceil_div n bn in
   let gx = let g = ceil_div m 128 in if g % 2 = 0 then g else g + 1 in
 
   let host_a = Array.init (m * k_total) ~f:(fun i ->
@@ -217,11 +219,11 @@ let gemm_blackwell_ws_tiled ~m ~n ~k_total =
   Gpu_buffer.copy_from_host buf_c host_c;
 
   (* 128B-swizzled maps built with the TRUE sizes: TMA zero-fills the rows /
-     columns past the edge of the tensor. *)
+     columns past the edge of the tensor. B's box is bn rows wide. *)
   let tma_a = Kernel_launch.create_tma_descriptor_sw128
     (Gpu_buffer.ptr buf_a) m k_total 128 64 in
   let tma_b = Kernel_launch.create_tma_descriptor_sw128
-    (Gpu_buffer.ptr buf_b) n k_total 128 64 in
+    (Gpu_buffer.ptr buf_b) n k_total bn 64 in
 
   match Compile.to_ptx (Blackwell_gemm.gemm_blackwell_ws ~k_total ()) with
   | Error e ->
@@ -238,7 +240,7 @@ let gemm_blackwell_ws_tiled ~m ~n ~k_total =
 
       let stages = 4 in
       let smem_a = stages * 128 * 64 * 2 in
-      let smem_b = stages * 128 * 64 * 2 in
+      let smem_b = stages * bn * 64 * 2 in
       let smem_mbar = 2 * stages * 8 + 256 in
       let smem_bytes = smem_a + smem_b + smem_mbar in
 
