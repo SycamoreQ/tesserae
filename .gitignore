@@ -333,3 +333,5 @@ TSWLatexianTemp*
 _build*/
 bin/
 .DS_Store
+cublas_bench.py
+.head_patch.diff
