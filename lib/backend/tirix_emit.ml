@@ -806,8 +806,8 @@ let emit_mma (m : mma_desc) : string =
         (am, an, ak, ka, fa, fb)
       | _ -> failwith "emit_mma: Sm100Tcgen05 requires Atom100"
     in
-    if atom_m <> 128 && atom_m <> 256 then
-      failwith (Printf.sprintf "emit_mma: tcgen05 cta_group::2 needs M=128|256, got %d" atom_m);
+    if atom_m <> 64 && atom_m <> 128 then
+      failwith (Printf.sprintf "emit_mma: tcgen05 cta_group::1 needs M=64|128, got %d" atom_m);
     if atom_n % 8 <> 0 || atom_n < 8 || atom_n > 256 then
       failwith (Printf.sprintf "emit_mma: tcgen05 needs N in 8..256, step 8, got %d" atom_n);
     let idesc = sm100_idesc ~m:atom_m ~n:atom_n ~a_fmt ~b_fmt in
@@ -835,7 +835,7 @@ let emit_mma (m : mma_desc) : string =
       | None -> Printf.sprintf "make_sm100_smem_desc(&smem.%s[stage][0])" b.tensor_name
       | Some _ -> Printf.sprintf "make_sm100_smem_desc(%s)" b.tensor_name
     in
-    (* tcgen05.mma.cta_group::2.kind::<k> [d_tmem], a_desc, b_desc, idesc, enable_input_d;
+    (* tcgen05.mma.cta_group::1.kind::<k> [d_tmem], a_desc, b_desc, idesc, enable_input_d;
        - enable_input_d is a .pred, so it goes through setp
        - a single thread issues the instruction *)
     String.concat ~sep:"\n" [
@@ -857,7 +857,7 @@ let emit_mma (m : mma_desc) : string =
       "        \".reg .pred p;\\n\\t\"";
       "        \"setp.ne.b32 p, %4, 0;\\n\\t\"";
       Printf.sprintf
-        "        \"tcgen05.mma.cta_group::2.kind::%s [%%0], %%1, %%2, %%3, p;\\n\\t\"" kind;
+        "        \"tcgen05.mma.cta_group::1.kind::%s [%%0], %%1, %%2, %%3, p;\\n\\t\"" kind;
       "        \"}\"";
       "        :: \"r\"(tmem_addr), \"l\"(_da), \"l\"(_db), \"r\"(idesc), \"r\"(_mma_acc)";
       "        : \"memory\");";
@@ -911,14 +911,14 @@ let emit_op (k:tirix) = function
   | Barrier b -> emit_barrier k b
   | TmemAlloc { addr_var; col_count } ->
     Printf.sprintf
-      "asm volatile(\"tcgen05.alloc.cta_group::2.sync.aligned.\
+      "asm volatile(\"tcgen05.alloc.cta_group::1.sync.aligned.\
        shared::cta.b32 [%%0], %d;\" \
        :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.%s)) : \"memory\");"
       col_count addr_var.var_name
 
   | TmemDealloc { addr_var; col_count } ->
     Printf.sprintf
-      "asm volatile(\"tcgen05.dealloc.cta_group::2.sync.aligned.b32 \
+      "asm volatile(\"tcgen05.dealloc.cta_group::1.sync.aligned.b32 \
        %%0, %d;\" \
        :: \"r\"(smem.%s[0]) : \"memory\");"
       col_count addr_var.var_name
@@ -959,12 +959,12 @@ let emit_op (k:tirix) = function
     let inst = match cta_mask with
       | None ->
         Printf.sprintf
-          "asm volatile(\"tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.b64 [%%0];\" :: \"r\"(%s) : \"memory\");"
+          "asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%%0];\" :: \"r\"(%s) : \"memory\");"
           mbar
       | Some mask ->
         (* multicast: arrives on the barrier at the same offset in every CTA of the mask *)
         Printf.sprintf
-          "asm volatile(\"tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%%0], %%1;\" :: \"r\"(%s), \"h\"((uint16_t)%d) : \"memory\");"
+          "asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%%0], %%1;\" :: \"r\"(%s), \"h\"((uint16_t)%d) : \"memory\");"
           mbar mask
     in
     Printf.sprintf "if ((threadIdx.x %% 32) == 0) { %s }" inst
@@ -1249,11 +1249,11 @@ let emit_mbar_init_loop (k : tirix) : string =
            without a second alloc is an invalid TMEM address and faults.) *)
         Printf.sprintf
           "  if (warp_id == 0) {\n\
-          \    asm volatile(\"tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%%0], %d;\"\n\
+          \    asm volatile(\"tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%%0], %d;\"\n\
           \      :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.tmem_addr[0])) : \"memory\");\n\
-          \    asm volatile(\"tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%%0], %d;\"\n\
+          \    asm volatile(\"tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%%0], %d;\"\n\
           \      :: \"r\"((uint32_t)__cvta_generic_to_shared(&smem.tmem_addr[1])) : \"memory\");\n\
-          \    asm volatile(\"tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned;\" ::: \"memory\");\n\
+          \    asm volatile(\"tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;\" ::: \"memory\");\n\
           \  }\n"
           k.bn k.bn
       else ""
@@ -1274,6 +1274,9 @@ let emit_mbar_init_loop (k : tirix) : string =
       %s\
       \  __syncthreads();%s"
       depth full_count empty_init done_init tmem_alloc_s cluster_sync
+
+
+(* ---- Blackwell epilogue split ------------------------------------------ *)
 
 (* The "store acc -> global" copy that the descriptor puts at the end of the
    consumer body. *)
@@ -1320,7 +1323,7 @@ let epilogue_warp_ids (k : tirix) : int list =
 let emit_mma_done_signal () : string =
   String.concat ~sep:"\n" [
     "  if ((threadIdx.x % 32) == 0) {";
-    "    asm volatile(\"tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.b64 [%0];\"";
+    "    asm volatile(\"tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];\"";
     "      :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar) + (tile % 2) * sizeof(uint64_t))) : \"memory\");";
     "  }";
   ]
@@ -1470,9 +1473,9 @@ let emit_kernel_func (k : tirix) : string =
       Printf.sprintf
         "  __syncthreads();\n\
         \  if (warp_id == 0) {\n\
-        \    asm volatile(\"tcgen05.dealloc.cta_group::2.sync.aligned.b32 %%0, %d;\"\n\
+        \    asm volatile(\"tcgen05.dealloc.cta_group::1.sync.aligned.b32 %%0, %d;\"\n\
         \      :: \"r\"(smem.tmem_addr[0]) : \"memory\");\n\
-        \    asm volatile(\"tcgen05.dealloc.cta_group::2.sync.aligned.b32 %%0, %d;\"\n\
+        \    asm volatile(\"tcgen05.dealloc.cta_group::1.sync.aligned.b32 %%0, %d;\"\n\
         \      :: \"r\"(smem.tmem_addr[1]) : \"memory\");\n\
         \  }\n"
         k.bn k.bn
