@@ -128,3 +128,9 @@ let encode_tensor_map_2d
 external create_tma_descriptor_sw128 :
   nativeint -> int -> int -> int -> int -> nativeint
   = "caml_create_tma_descriptor_sw128"
+
+external create_tma_descriptor_f32_sw128_l2 :
+  nativeint -> int -> int -> int -> int -> nativeint
+    (* ptr, global_rows, global_cols, box_rows (box_cols is fixed at 32 so
+       the inner extent is 128B for SW128), l2_mode 0=none 1=128B 2=256B *)
+  = "caml_create_tma_descriptor_f32_sw128_l2"

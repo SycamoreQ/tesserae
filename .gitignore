@@ -331,7 +331,7 @@ TSWLatexianTemp*
 #*Notes.bib
 
 _build*/
-bin/
+__pycache__/
 .DS_Store
 cublas_bench.py
 .head_patch.diff

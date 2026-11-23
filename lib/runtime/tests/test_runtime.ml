@@ -192,7 +192,9 @@ let ceil_div a b = (a + b - 1) / b
 let gemm_blackwell_ws_tiled ~m ~n ~k_total =
   if k_total % 8 <> 0 then
     Alcotest.failf "k_total must be a multiple of 8 (got %d)" k_total;
-  (* The kernel's CTA output tile is 128 x 256 (gemm_warpspec default bn=256). *)
+  (* The CTA-pair output tile is 256 x 256 (gemm_warpspec default bn=256):
+     the 2-CTA tcgen05.mma splits it so each CTA computes its own 128-row
+     half and loads half of B (bn/2 columns). *)
   let bn = 256 in
   let gy = ceil_div n bn in
   let gx = let g = ceil_div m 128 in if g % 2 = 0 then g else g + 1 in
@@ -219,11 +221,16 @@ let gemm_blackwell_ws_tiled ~m ~n ~k_total =
   Gpu_buffer.copy_from_host buf_c host_c;
 
   (* 128B-swizzled maps built with the TRUE sizes: TMA zero-fills the rows /
-     columns past the edge of the tensor. B's box is bn rows wide. *)
+     columns past the edge of the tensor. B's box is bn/2 rows wide: the
+     2-CTA MMA shards B along N and each CTA loads its own half. *)
   let tma_a = Kernel_launch.create_tma_descriptor_sw128
     (Gpu_buffer.ptr buf_a) m k_total 128 64 in
   let tma_b = Kernel_launch.create_tma_descriptor_sw128
-    (Gpu_buffer.ptr buf_b) n k_total bn 64 in
+    (Gpu_buffer.ptr buf_b) n k_total (bn/2) 64 in
+  (* C output map: f32, box 128 rows x 32 cols (128B inner extent for
+     SW128). Requires N % 4 == 0 (16B row-stride alignment). *)
+  let tma_c = Kernel_launch.create_tma_descriptor_f32_sw128_l2
+    (Gpu_buffer.ptr buf_c) m n 128 1 in
 
   match Compile.to_ptx (Blackwell_gemm.gemm_blackwell_ws ~k_total ()) with
   | Error e ->
@@ -238,11 +245,16 @@ let gemm_blackwell_ws_tiled ~m ~n ~k_total =
       let module_ = Kernel_launch.load_ptx ptx in
       let func = Kernel_launch.get_function module_ "gemm_blackwell_ws" in
 
-      let stages = 4 in
-      let smem_a = stages * 128 * 64 * 2 in
-      let smem_b = stages * bn * 64 * 2 in
+      (* bk = 128 (matching Gemm_warpspec): 64 KB/stage, so at most 3
+         stages fit in the 227 KB smem budget. *)
+      let stages = 3 in
+      let bk = 128 in
+      let smem_a = stages * 128 * bk * 2 in
+      let smem_b = stages * (bn/2) * bk * 2 in
       let smem_mbar = 2 * stages * 8 + 256 in
-      let smem_bytes = smem_a + smem_b + smem_mbar in
+      (* plus the epilogue's 16 KB staging buffer (128x32 f32) and its
+         1024B alignment padding (TMA swizzle atom) *)
+      let smem_bytes = smem_a + smem_b + smem_mbar + 16384 + 1024 in
 
       let expected =
         Array.init (m * n) ~f:(fun i ->
@@ -263,7 +275,7 @@ let gemm_blackwell_ws_tiled ~m ~n ~k_total =
           ~block:(192, 1, 1)
           ~smem:smem_bytes
           ~cluster:(2, 1, 1)
-          ~args:[ tma_a; tma_b; Gpu_buffer.ptr buf_c
+          ~args:[ tma_a; tma_b; tma_c
                 ; Nativeint.of_int m; Nativeint.of_int n ] ();
         Kernel_launch.synchronize ();
 
@@ -308,6 +320,7 @@ let gemm_blackwell_ws_tiled ~m ~n ~k_total =
       Gpu_buffer.free buf_c;
       Kernel_launch.free_tma_descriptor tma_a;
       Kernel_launch.free_tma_descriptor tma_b;
+      Kernel_launch.free_tma_descriptor tma_c;
       Kernel_launch.unload module_;
 
       if !failed > 0 then
@@ -331,7 +344,9 @@ let test_gemm_blackwell_ws_ragged_n () = gemm_blackwell_ws_tiled ~m:256 ~n:200 ~
 
 (* everything ragged: 3 row tiles (rounded up to 4 for the cluster), N=130 and
    K=200 (4 K tiles, the last one partial) *)
-let test_gemm_blackwell_ws_ragged_all () = gemm_blackwell_ws_tiled ~m:300 ~n:130 ~k_total:200
+(* n must be a multiple of 4: the C tensor map's row stride (N * 4 bytes)
+   has to be 16-byte aligned for cuTensorMapEncodeTiled. *)
+let test_gemm_blackwell_ws_ragged_all () = gemm_blackwell_ws_tiled ~m:300 ~n:132 ~k_total:200
 
 (* K not a multiple of 64: 72 = 64 + 8, 2 K tiles *)
 let test_gemm_blackwell_ws_k72 () = gemm_blackwell_ws_tiled ~m:128 ~n:128 ~k_total:72

@@ -136,10 +136,11 @@ let infer_copy_kind (ctx : ctx)
      | Kernel_ast.SM80 -> Tirix.CpAsync
      | Kernel_ast.SM90a -> Tirix.TmaLoad
      | Kernel_ast.SM100a ->
-       let (Tirix.Tensor dst_t) = dst in
-       let is_b = String.is_substring dst_t.tensor_name ~substring:"_B" in
-       if ctx.multicast && is_b then Tirix.TmaMulticast
-       else Tirix.TmaLoad)
+       (* tcgen05.mma cta_group::2 shards B along N across the CTA pair:
+          each CTA loads its own N-half into its own smem, so B is never
+          multicast. The rank offset is applied in the coord lowering
+          below (see coord_n). *)
+       Tirix.TmaLoad)
 
   | "shared", "global" -> Tirix.SmemToGlobal
 
@@ -220,12 +221,29 @@ let rec is_tma_source name = function
 
   | _ -> false
 
+(* A global tensor that is the DESTINATION of a store (e.g. the GEMM's C
+   output) gets a TMA descriptor parameter too, so the epilogue can store
+   through cp.async.bulk.tensor instead of raw pointer writes. *)
+let rec is_tma_store_dest (name : string) (stmt : Kernel_ast.stmt) : bool =
+  match stmt with
+  | Kernel_ast.Store (_, Kernel_ast.Arg (n, _, Kernel_ast.Global), _) ->
+    String.equal n name
+  | Kernel_ast.For (_, _, _, body) -> List.exists body ~f:(is_tma_store_dest name)
+  | Kernel_ast.Pipeline (_, stmts) -> List.exists stmts ~f:(is_tma_store_dest name)
+  | Kernel_ast.If (_, thn, els) ->
+    List.exists thn ~f:(is_tma_store_dest name)
+    || List.exists els ~f:(is_tma_store_dest name)
+  | Kernel_ast.Seq ss -> List.exists ss ~f:(is_tma_store_dest name)
+  | _ -> false
+
 let lower_params (ctx : ctx) (k : Kernel_ast.kernel) : Tirix.param list =
   let flat = Layout.make (Modes.Int 1) (Modes.Int 1) in
   let sw   = Swizzle.make 0 0 0 in
   List.map k.Kernel_ast.args ~f:(fun (name, elem, space, _dir) ->
     let is_tma = match ctx.arch, space with
-       | (SM90a | SM100a), Global -> is_tma_source name k.body
+       | Kernel_ast.SM90a, Global -> is_tma_source name k.body
+       | Kernel_ast.SM100a, Global ->
+         is_tma_source name k.body || is_tma_store_dest name k.body
        | _ -> false
      in
     { Tirix.param_name = name
@@ -439,7 +457,18 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
       | None ->
         (match dst_expr with
         | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.n > 0 ->
-          block_coord (Tirix.BlockIdx Tirix.Y) shape.Kernel_ast.n
+          if Poly.(ctx.arch = Kernel_ast.SM100a) && ctx.cta_count > 1
+             && shape.Kernel_ast.m = 0 then
+            (* 2-CTA pair tile: one y-block of the cluster covers 2*n
+               columns and each CTA loads its own half, offset by its rank
+               within the pair. *)
+            Some (Tirix.Arith (Tirix.Arith.Add,
+              Tirix.Arith (Tirix.Arith.Mul, Tirix.Builtin (Tirix.BlockIdx Tirix.Y),
+                Tirix.Const (Tirix.S32,
+                  Int32.of_int_exn (2 * shape.Kernel_ast.n))),
+              Tirix.Arith (Tirix.Arith.Mul, Tirix.Builtin Tirix.ClusterCtaId,
+                Tirix.Const (Tirix.S32, Int32.of_int_exn shape.Kernel_ast.n))))
+          else block_coord (Tirix.BlockIdx Tirix.Y) shape.Kernel_ast.n
         | _ -> None)
     in
 
@@ -576,18 +605,22 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
              Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)),
            Tirix.Const (Tirix.S32, 2l))
        in
-       (* tcgen05.commit arrives when all prior MMAs of this thread completed,
-          so the stage is only released after the hardware is done reading it.
-          Multicast to every CTA: each CTA's producer also writes into its peer. *)
-       let release = match ctx.empty_mbar with
-         | Some empty ->
-           let mask =
-             if ctx.multicast && ctx.cta_count > 1
-             then Some (Int.shift_left 1 ctx.cta_count - 1)
-             else None
-           in
-           [ Tirix.SOp (Tirix.TmemCommit { mbar_var = empty; cta_mask = mask }) ]
-         | None -> []
+        (* tcgen05.commit arrives when all prior MMAs of this thread completed,
+           so the stage is only released after the hardware is done reading it.
+           For cta_group::2 only the leader CTA issues the MMAs and commits, so
+           the release must be multicast: each CTA's producer waits on its own
+           empty_mbar and the commit delivers one arrival to each. *)
+        let release = match ctx.empty_mbar with
+          | Some empty ->
+            let pair_release =
+              Poly.(ctx.arch = Kernel_ast.SM100a) && ctx.cta_count > 1 in
+            let mask =
+              if pair_release || (ctx.multicast && ctx.cta_count > 1)
+              then Some (Int.shift_left 1 ctx.cta_count - 1)
+              else None
+            in
+            [ Tirix.SOp (Tirix.TmemCommit { mbar_var = empty; cta_mask = mask }) ]
+          | None -> []
        in
        Tirix.SSeq
          ([ Tirix.SOp (Tirix.Barrier (Tirix.MbarWaitParity { mbar; phase }))
@@ -737,6 +770,16 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
         ; (4, Cluster.Epilogue); (5, Cluster.Epilogue) ]
   in
 
+  (* tcgen05.mma cta_group::2 covers the CTA-PAIR tile: M and N are each
+     split across the two CTAs (A along M, B along N). tile.n is the
+     per-CTA B shard, so the pair N — used for the MMA atom, the
+     instruction descriptor, the TMEM allocation and the epilogue column
+     base — is twice tile.n. bm stays per-CTA because each CTA owns its
+     A rows directly (blockIdx.x addresses CTA granularity). *)
+  let pair_n = match k.Kernel_ast.arch with
+    | Kernel_ast.SM100a -> 2 * k.Kernel_ast.tile.Kernel_ast.n
+    | _ -> k.Kernel_ast.tile.Kernel_ast.n in
+
   let ctx = {
     arch = k.Kernel_ast.arch
   ; tensors = tensors @ mbar_tensors
@@ -745,7 +788,7 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   ; empty_mbar = empty_mbar_var
   ; pipeline_depth
   ; bm = k.Kernel_ast.tile.Kernel_ast.m
-  ; bn = k.Kernel_ast.tile.Kernel_ast.n
+  ; bn = pair_n
   ; bk = k.Kernel_ast.tile.Kernel_ast.k
   ; elem_bytes = elem_byte_width k.Kernel_ast.elem
   ; roles = cluster.Cluster.warp_roles
@@ -771,7 +814,7 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   ; smem_bytes           = 0
   ; pipeline_depth
   ; bm                   = k.Kernel_ast.tile.Kernel_ast.m
-  ; bn                   = k.Kernel_ast.tile.Kernel_ast.n
+  ; bn                   = pair_n
   ; bk                   = k.Kernel_ast.tile.Kernel_ast.k
   ; cluster
   ; body                 = sync_after_init @ [ body_stmt ]

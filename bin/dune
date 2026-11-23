@@ -7,3 +7,9 @@
  (public_name dump_kernel)
  (name dump_kernel)
  (libraries tesserae_runtime tesserae_kernel))
+
+(executable
+ (public_name dump_kernel_pure)
+ (name dump_kernel_pure)
+ (libraries base tesserae_kernel tesserae_tirix tesserae_backend
+            tesserae_blackwell_kernels))

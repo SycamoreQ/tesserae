@@ -22,6 +22,12 @@ external create_tma_descriptor_sw128_l2 :
   nativeint -> int -> int -> int -> int -> nativeint
   = "caml_create_tma_descriptor_sw128_l2"
 
+(* f32 C-output map: box is 128 rows x 32 cols (32*4 = 128B inner extent,
+   required by SW128). 4th arg is the box height, 5th the L2 mode. *)
+external create_tma_descriptor_f32_sw128_l2 :
+  nativeint -> int -> int -> int -> int -> nativeint
+  = "caml_create_tma_descriptor_f32_sw128_l2"
+
 let l2_name = function
   | 0 -> "L2_NONE"
   | 1 -> "L2_128B"
@@ -32,6 +38,23 @@ let l2_name = function
 let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats
     ~multicast ~bn () =
   if k_total % 8 <> 0 then failwith "k must be a multiple of 8";
+  (* bk = 128, matching Gemm_warpspec's tile. 64 KB/stage, so clamp the
+     pipeline depth to the 227 KB dynamic-smem budget BEFORE compiling —
+     otherwise the kernel's SharedStorage overflows the allocation and the
+     TMA writes out of range (Xid 13). The kernel also reserves a 16 KB
+     epilogue staging buffer (128x32 f32) inside SharedStorage. *)
+  (* 16 KB staging + up to 1 KB of 1024B alignment padding inside
+     SharedStorage (the TMA swizzle atom alignment). *)
+  let epi_smem = 16384 + 1024 in
+  let bk = 128 in
+  let per_stage = 128 * bk * 2 + (bn / 2) * bk * 2 in
+  let max_stages = (232448 - 320 - epi_smem) / per_stage in
+  let stages =
+    if stages > max_stages then begin
+      Stdio.printf "note: clamping stages %d -> %d (smem limit with bk=%d)\n%!"
+        stages max_stages bk;
+      max_stages
+    end else stages in
   let gy = ceil_div n bn in
   let gx = let g = ceil_div m 128 in if g % 2 = 0 then g else g + 1 in
 
@@ -61,9 +84,9 @@ let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats
       in
       let module_ = Kernel_launch.load_ptx ptx in
       let func = Kernel_launch.get_function module_ "gemm_blackwell_ws" in
-      (* A stage: 128*64 f16, B stage: bn*64 f16; plus full/empty/mma_done
-         barriers and the TMEM address slots. *)
-      let smem_bytes = stages * (128 * 64 * 2 + bn * 64 * 2) + (2 * stages * 8 + 256) in
+      (* A stage: 128*128 f16, B stage: bn/2*128 f16; plus full/empty/
+         mma_done barriers and the TMEM address slots. *)
+      let smem_bytes = stages * per_stage + (2 * stages * 8 + 256) + epi_smem in
 
       Stdio.printf "shape M=%d N=%d K=%d stages=%d bn=%d smem=%d B grid=(%d,%d) CTAs=%d\n%!"
         m n k_total stages bn smem_bytes gx gy (gx * gy);
@@ -73,7 +96,9 @@ let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats
         let tma_a = create_tma_descriptor_sw128_l2
           (Gpu_buffer.ptr buf_a) m k_total 128 l2_mode in
         let tma_b = create_tma_descriptor_sw128_l2
-          (Gpu_buffer.ptr buf_b) n k_total bn l2_mode in
+          (Gpu_buffer.ptr buf_b) n k_total (bn / 2) l2_mode in
+        let tma_c = create_tma_descriptor_f32_sw128_l2
+          (Gpu_buffer.ptr buf_c) m n 128 l2_mode in
 
         let launch () =
           Kernel_launch.launch func
@@ -81,7 +106,7 @@ let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats
             ~block:(192, 1, 1)
             ~smem:smem_bytes
             ~cluster:(2, 1, 1)
-            ~args:[ tma_a; tma_b; Gpu_buffer.ptr buf_c
+            ~args:[ tma_a; tma_b; tma_c
                   ; Nativeint.of_int m; Nativeint.of_int n ] ()
         in
 
@@ -113,6 +138,7 @@ let bench_shape ?(l2_modes = [1]) ~m ~n ~k_total ~stages ~warmup ~iters ~repeats
 
         Kernel_launch.free_tma_descriptor tma_a;
         Kernel_launch.free_tma_descriptor tma_b;
+        Kernel_launch.free_tma_descriptor tma_c;
 
         (l2_mode, times.(0), times.(Array.length times / 2), !bad)
       ) in
@@ -151,7 +177,8 @@ let () =
     ("-k", Stdlib.Arg.Set_int k, " reduction size, multiple of 8 (default 4104)");
     ("-ks", Stdlib.Arg.Set_string ks,
      " comma-separated K values, e.g. 512,1024,2048,4096 (overrides -k)");
-    ("-stages", Stdlib.Arg.Set_int stages, " pipeline stages, 2..7 (default 3)");
+    ("-stages", Stdlib.Arg.Set_int stages,
+     " pipeline stages (clamped to the smem limit; bk=128 allows 3)");
     ("-warmup", Stdlib.Arg.Set_int warmup, " untimed launches (default 3)");
     ("-iters", Stdlib.Arg.Set_int iters, " launches per timed batch (default 20)");
     ("-repeats", Stdlib.Arg.Set_int repeats, " timed batches (default 5)");

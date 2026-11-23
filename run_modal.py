@@ -81,6 +81,50 @@ def run_tesserae_bench(args: str = ""):
         print("Benchmark failed or timed out. Check the logs above.")
 
 
+@app.function(image=tesserae_image, gpu="B200", timeout=600, env=BASE_ENV)
+def run_tesserae_ncu(args: str = ""):
+    """Nsight Compute profile of one steady-state bench launch.
+
+    Runs the compiled bench binary DIRECTLY (no `dune exec` under injection),
+    with an explicit metric list so ncu needs a single replay pass, and a
+    minimal bench run by default (1 warmup, 1 iter, 1 repeat) so the app
+    exits right after the profiled launch. Sections/multi-pass collection is
+    what made the first version appear to hang.
+    """
+    if not _build():
+        return
+    subprocess.run(
+        "nvidia-smi --query-gpu=name,clocks.sm --format=csv,noheader", shell=True)
+    r = _sh(
+        'NCU=$(command -v ncu || ls /usr/local/cuda/bin/ncu '
+        '/opt/nvidia/nsight-compute*/ncu 2>/dev/null | head -1); '
+        'echo "ncu: ${NCU:-MISSING}"; "$NCU" --version | head -2',
+        capture_output=True, text=True)
+    print(r.stdout)
+    if r.returncode != 0 or "MISSING" in r.stdout:
+        print("ncu not found in image:", r.stderr[-2000:])
+        return
+    if not args.strip():
+        args = "-m 4096 -n 4096 -k 4096 -stages 3 -warmup 1 -iters 1 -repeats 1 -l2 128"
+    metrics = ",".join([
+        "gpu__time_duration.sum",
+        "launch__registers_per_thread",
+        "launch__waves_per_multiprocessor",
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+        "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+        "sm__warps_active.avg.pct_of_peak_sustained_active",
+    ])
+    exe = "_build/default/lib/runtime/bench/bench_gemm.exe"
+    print(f"Running ncu on {exe} {args}")
+    _sh(
+        f'NCU=$(command -v ncu || ls /usr/local/cuda/bin/ncu '
+        f'/opt/nvidia/nsight-compute*/ncu 2>/dev/null | head -1); '
+        f'timeout 480s "$NCU" --kernel-name gemm_blackwell_ws '
+        f'--launch-skip 1 --launch-count 1 --clock-control none '
+        f'--metrics {metrics} {exe} {args}'
+    )
+
+
 @app.function(image=tesserae_image, timeout=600, env=BASE_ENV)
 def check_build():
     """No GPU needed, so it starts immediately even when B200s are queued.
@@ -89,21 +133,18 @@ def check_build():
     if _build():
         print("Build OK.")
 
-@app.function(image=torch_image, gpu="B200", timeout=900)
-def run_cublas(args: str = ""):
-    subprocess.run("nvidia-smi --query-gpu=name,clocks.max.sm,clocks.sm --format=csv", shell=True)
-    subprocess.run(f"python /workspace/cublas_bench.py {args}", shell=True)
-
-
 @app.local_entrypoint()
 def main(bench: bool = False, build_only: bool = False, dump: bool = False,
          test_head: bool = False, test_logs: bool = False, cublas: bool = False,
-         bench_args: str = "", cublas_args: str = ""):
+         ncu: bool = False, bench_args: str = "", cublas_args: str = "",
+         ncu_args: str = ""):
     """
     modal run run_modal.py                      # tests
     modal run run_modal.py --bench              # benchmark, default 4096^3
     modal run run_modal.py --bench --bench-args "-m 2048 -n 2048 -k 2048"
     modal run run_modal.py --build-only         # compile check, no GPU
+    modal run run_modal.py --ncu                # ncu profile of one launch
+    modal run run_modal.py --ncu --ncu-args "-m 4096 -n 4096 -k 4096 -stages 3"
     modal run run_modal.py --cublas             # cuBLAS reference timing
     modal run run_modal.py --cublas --cublas-args "--shapes 4096x4096x4104"
     """
@@ -115,6 +156,8 @@ def main(bench: bool = False, build_only: bool = False, dump: bool = False,
         cat_test_logs.remote()
     elif dump:
         dump_kernel.remote()
+    elif ncu:
+        run_tesserae_ncu.remote(ncu_args)
     elif cublas:
         run_cublas.remote(cublas_args)
     elif bench:
