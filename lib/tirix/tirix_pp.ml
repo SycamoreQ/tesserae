@@ -12,6 +12,7 @@ let pp_builtin = function
   | BlockIdx  a  -> Printf.sprintf "blockIdx.%s"  (pp_axis a)
   | GridDim   a  -> Printf.sprintf "gridDim.%s"  (pp_axis a)
   | ClusterCtaId -> "cluster_ctaid"
+  | KParam name -> name
   | WarpId -> "warp_id"
   | LaneId -> "lane_id"
 

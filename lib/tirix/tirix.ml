@@ -70,6 +70,7 @@ type gpu_builtin =
   | ClusterCtaId
   | WarpId
   | LaneId
+  | KParam of string   (* scalar kernel parameter (e.g. "M", "N"), by name *)
 
 type addr_conv_kind =
   | GenericToShared

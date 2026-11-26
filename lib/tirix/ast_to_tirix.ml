@@ -18,6 +18,10 @@ type ctx = {
   elem_bytes : int;
   roles : (int * Cluster.warp_role) list;
   cta_count : int;
+  (* Whether the kernel takes scalar M / N parameters (needed by the
+     persistent pair-tile decomposition). *)
+  has_m : bool;
+  has_n : bool;
   (* The single decision point for 2-CTA TMA multicast. When false every CTA
      loads its own tiles (TmaLoad, no multicast commit). Flip it when the 2-CTA
      sharing optimisation is implemented. *)
@@ -375,6 +379,72 @@ let group_role_of_pred (ctx : ctx) (pred : Kernel_ast.pred_expr)
   | _ -> None
 
 
+(* ---- Persistent pair-tile decomposition (2-CTA Blackwell) ----
+
+   The launch grid holds num_pairs = (gridDim.x/2) * gridDim.y resident
+   CTA pairs. Each pair walks the flattened pair-tile index
+     idx = pair_base + tile * num_pairs,
+     pair_base = blockIdx.x/2 + (gridDim.x/2) * blockIdx.y
+   striding so that all pair tiles are covered regardless of the grid
+   shape. The index is decomposed as
+     tile_m = idx / n_blocks,  tile_n = idx % n_blocks
+   with n_blocks = ceil(N / pair_n) and m_blocks = ceil(M / pair_m), where
+   pair_m/pair_n are the CTA-pair tile extents. Requires scalar M and N
+   kernel params; returns None otherwise (callers fall back to the static
+   per-CTA coordinate mapping). *)
+type pair_decomp = {
+  pd_idx : int32 Tirix.expr;      (* flattened pair-tile index *)
+  pd_tile_m : int32 Tirix.expr;
+  pd_tile_n : int32 Tirix.expr;
+  pd_total : int32 Tirix.expr;    (* m_blocks * n_blocks *)
+  pd_bound : int32 Tirix.expr;    (* ceil(total / num_pairs) *)
+}
+
+let pa_c (n : int) : int32 Tirix.expr =
+  Tirix.Const (Tirix.S32, Int32.of_int_exn n)
+let pa_add a b = Tirix.Arith (Tirix.Arith.Add, a, b)
+let pa_sub a b = Tirix.Arith (Tirix.Arith.Sub, a, b)
+let pa_mul a b = Tirix.Arith (Tirix.Arith.Mul, a, b)
+let pa_div a b = Tirix.Arith (Tirix.Arith.Div, a, b)
+let pa_mod a b = Tirix.Arith (Tirix.Arith.Mod, a, b)
+
+let pair_decomp_of (ctx : ctx) (tile_var : Tirix.var option)
+  : pair_decomp option =
+  if Poly.(ctx.arch <> Kernel_ast.SM100a) || ctx.cta_count < 2
+     || not ctx.has_m || not ctx.has_n then None
+  else
+    let pair_m = 2 * ctx.bm and pair_n = ctx.bn in
+    let half_gx = pa_div (Tirix.Builtin (Tirix.GridDim Tirix.X)) (pa_c 2) in
+    let num_pairs =
+      pa_mul half_gx (Tirix.Builtin (Tirix.GridDim Tirix.Y)) in
+    let pair_base =
+      pa_add (pa_div (Tirix.Builtin (Tirix.BlockIdx Tirix.X)) (pa_c 2))
+        (pa_mul half_gx (Tirix.Builtin (Tirix.BlockIdx Tirix.Y))) in
+    let idx =
+      match tile_var with
+      | Some tv -> pa_add pair_base (pa_mul (Tirix.Var tv) num_pairs)
+      | None -> pair_base
+    in
+    let n_blocks =
+      pa_div (pa_add (Tirix.Builtin (Tirix.KParam "N")) (pa_c (pair_n - 1)))
+        (pa_c pair_n) in
+    let m_blocks =
+      pa_div (pa_add (Tirix.Builtin (Tirix.KParam "M")) (pa_c (pair_m - 1)))
+        (pa_c pair_m) in
+    let total = pa_mul m_blocks n_blocks in
+    Some { pd_idx = idx
+         ; pd_tile_m = pa_div idx n_blocks
+         ; pd_tile_n = pa_mod idx n_blocks
+         ; pd_total = total
+         ; pd_bound = pa_div (pa_add total (pa_sub num_pairs (pa_c 1))) num_pairs }
+
+(* A/B/epilogue coordinates for a persistent pair tile. The CTA's half of
+   the pair tile is selected by its rank in the cluster. *)
+let pair_coord ~(tile_dim : int32 Tirix.expr) ~(extent : int)
+    : int32 Tirix.expr =
+  pa_add (pa_mul tile_dim (pa_c extent))
+    (pa_mul (Tirix.Builtin Tirix.ClusterCtaId) (pa_c (extent / 2)))
+
 let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
     (stmt : Kernel_ast.stmt) : Tirix.stmt =
   match stmt with
@@ -448,7 +518,15 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
       | None ->
         (match dst_expr with
         | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.m > 0 ->
-          block_coord (Tirix.BlockIdx Tirix.X) shape.Kernel_ast.m
+          if Poly.(ctx.arch = Kernel_ast.SM100a) && ctx.cta_count > 1 then
+            (* A is sharded along M across the pair; the row block comes
+               from the persistent pair-tile index. *)
+            (match pair_decomp_of ctx loop_ctx.tile_var with
+             | Some pd ->
+               Some (pair_coord ~tile_dim:pd.pd_tile_m
+                       ~extent:(2 * shape.Kernel_ast.m))
+             | None -> block_coord (Tirix.BlockIdx Tirix.X) shape.Kernel_ast.m)
+          else block_coord (Tirix.BlockIdx Tirix.X) shape.Kernel_ast.m
         | _ -> None)
     in
     let coord_n =
@@ -459,15 +537,19 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
         | Kernel_ast.Smem (_, _, shape) when is_tma && shape.Kernel_ast.n > 0 ->
           if Poly.(ctx.arch = Kernel_ast.SM100a) && ctx.cta_count > 1
              && shape.Kernel_ast.m = 0 then
-            (* 2-CTA pair tile: one y-block of the cluster covers 2*n
-               columns and each CTA loads its own half, offset by its rank
-               within the pair. *)
-            Some (Tirix.Arith (Tirix.Arith.Add,
-              Tirix.Arith (Tirix.Arith.Mul, Tirix.Builtin (Tirix.BlockIdx Tirix.Y),
-                Tirix.Const (Tirix.S32,
-                  Int32.of_int_exn (2 * shape.Kernel_ast.n))),
-              Tirix.Arith (Tirix.Arith.Mul, Tirix.Builtin Tirix.ClusterCtaId,
-                Tirix.Const (Tirix.S32, Int32.of_int_exn shape.Kernel_ast.n))))
+            (* 2-CTA pair tile: B is sharded along N. tile_n comes from the
+               persistent pair-tile index; this CTA loads its rank's half. *)
+            (match pair_decomp_of ctx loop_ctx.tile_var with
+             | Some pd ->
+               Some (pair_coord ~tile_dim:pd.pd_tile_n
+                       ~extent:(2 * shape.Kernel_ast.n))
+             | None ->
+               Some (Tirix.Arith (Tirix.Arith.Add,
+                 Tirix.Arith (Tirix.Arith.Mul, Tirix.Builtin (Tirix.BlockIdx Tirix.Y),
+                   Tirix.Const (Tirix.S32,
+                     Int32.of_int_exn (2 * shape.Kernel_ast.n))),
+                 Tirix.Arith (Tirix.Arith.Mul, Tirix.Builtin Tirix.ClusterCtaId,
+                   Tirix.Const (Tirix.S32, Int32.of_int_exn shape.Kernel_ast.n)))))
           else block_coord (Tirix.BlockIdx Tirix.Y) shape.Kernel_ast.n
         | _ -> None)
     in
@@ -554,20 +636,28 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
       ; tma_coord_m = (match tma_coord_scaled loop_ctx.m_var src_expr (fun s -> s.Kernel_ast.m) with
           | Some _ as c -> c
           | None ->
-            (* Epilogue acc stores have no m loop: the row is the CTA's tile
-               row, offset by tile * gridDim.x like the A loads above. Without
-               this the emitter's row_base fallback drops the tile offset and
-               every tile writes over tile 0's output rows. *)
-            (match loop_ctx.tile_var with
-             | Some tv ->
-               Some (Tirix.Arith (Tirix.Arith.Mul,
-                 Tirix.Arith (Tirix.Arith.Add,
-                   Tirix.Builtin (Tirix.BlockIdx Tirix.X),
-                   Tirix.Arith (Tirix.Arith.Mul, Tirix.Var tv,
-                     Tirix.Builtin (Tirix.GridDim Tirix.X))),
-                 Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.bm)))
-             | None -> None))
-      ; tma_coord_n = tma_coord_scaled loop_ctx.n_var src_expr (fun s -> s.Kernel_ast.n)
+            (* Epilogue acc stores have no m loop: the row is the CTA's half
+               of the pair tile selected by the persistent pair-tile index
+               (static fallback: the CTA's tile row, offset by tile *
+               gridDim.x like the A loads above). *)
+            (match pair_decomp_of ctx loop_ctx.tile_var with
+             | Some pd when Poly.(ctx.arch = Kernel_ast.SM100a) && ctx.cta_count > 1 ->
+               Some (pair_coord ~tile_dim:pd.pd_tile_m ~extent:(2 * ctx.bm))
+             | _ ->
+               (match loop_ctx.tile_var with
+                | Some tv ->
+                  Some (Tirix.Arith (Tirix.Arith.Mul,
+                    Tirix.Arith (Tirix.Arith.Add,
+                      Tirix.Builtin (Tirix.BlockIdx Tirix.X),
+                      Tirix.Arith (Tirix.Arith.Mul, Tirix.Var tv,
+                        Tirix.Builtin (Tirix.GridDim Tirix.X))),
+                    Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.bm)))
+                | None -> None)))
+      ; tma_coord_n = (match pair_decomp_of ctx loop_ctx.tile_var with
+          | Some pd when Poly.(ctx.arch = Kernel_ast.SM100a) && ctx.cta_count > 1 ->
+            (* both CTAs write the pair's full N block *)
+            Some (pa_mul pd.pd_tile_n (pa_c ctx.bn))
+          | _ -> tma_coord_scaled loop_ctx.n_var src_expr (fun s -> s.Kernel_ast.n))
       ; stage_var = loop_ctx.stage_var
       }) in
 
@@ -675,14 +765,34 @@ let rec convert_stmt (ctx : ctx) (loop_ctx : loop_ctx) ?(skip_empty_wait=false)
               Tirix.Const (Tirix.S32, Int32.of_int_exn ctx.pipeline_depth)))) ]
     in
     let lowered_body = convert_stmts_with_skip ctx new_loop_ctx body_stmts in
+    (* Persistent tile schedule (2-CTA Blackwell): the tile loop runs
+       ceil(total_pair_tiles / num_pairs) iterations over the flattened
+       pair-tile index, and iterations beyond the total are skipped. All
+       warp groups build the same schedule (the epilogue's loop reuses it
+       via find_tile_schedule in the emitter). *)
+    let persistent =
+      if String.equal var_name "tile"
+         && Poly.(ctx.arch = Kernel_ast.SM100a) && ctx.cta_count > 1
+      then pair_decomp_of ctx (Some loop_var) else None in
+    let stop =
+      match persistent with
+      | Some pd -> pd.pd_bound
+      | None -> Tirix.Const (Tirix.S32, Int32.of_int_exn stop_val) in
+    let body_stmts' =
+      match persistent with
+      | Some pd ->
+        [ Tirix.SIf (Tirix.Cmp (Tirix.Cmp.Lt, pd.pd_idx, pd.pd_total),
+                     stage_assign @ lowered_body, []) ]
+      | None -> stage_assign @ lowered_body
+    in
     let loop = Tirix.SFor {
       var = loop_var
     ; start = Tirix.Const (Tirix.S32, Int32.of_int_exn start_val)
-    ; stop = Tirix.Const (Tirix.S32, Int32.of_int_exn stop_val)
+    ; stop
     ; step = Tirix.Const (Tirix.S32, 1l)
     ; dir = Tirix.Upto
     ; unroll = false
-    ; body = stage_assign @ lowered_body
+    ; body = body_stmts'
     } in
     (match stage_opt with
      | None -> loop
@@ -795,7 +905,11 @@ let lower (k : Kernel_ast.kernel) : Tirix.tirix =
   ; cta_count =
       cluster.Cluster.dims.Cluster.x * cluster.Cluster.dims.Cluster.y
       * cluster.Cluster.dims.Cluster.z
-  ;   multicast = k.Kernel_ast.multicast;
+  ;   multicast = k.Kernel_ast.multicast
+  ; has_m = List.exists k.Kernel_ast.args
+        ~f:(fun (n, _, _, _) -> String.equal n "M")
+  ; has_n = List.exists k.Kernel_ast.args
+        ~f:(fun (n, _, _, _) -> String.equal n "N")
   } in
 
   (* __syncthreads() after mbarrier init loop (warp 0 lane 0) so that

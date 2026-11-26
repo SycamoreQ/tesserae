@@ -21,6 +21,16 @@ val launch :
 val synchronize : unit -> unit
 val device_info : unit -> string
 
+(** [max_active_clusters f ~block ~smem ~cluster] returns the maximum number of
+    clusters that can be co-resident on the device for the given launch
+    configuration, via [cuOccupancyMaxActiveClusters]. *)
+val max_active_clusters :
+  func ->
+  block:(int * int * int) ->
+  smem:int ->
+  cluster:(int * int * int) ->
+  int
+
 val encode_tensor_map_2d :
   tmap_ptr:nativeint ->
   data_ptr:nativeint ->

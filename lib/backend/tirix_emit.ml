@@ -11,10 +11,7 @@ let tirix_is_tma (k : tirix) =
 
 let debug_consumer_delay_us = 0
 
-let debug_pipeline_stats =
-  match Sys.getenv "TESSERAE_PIPELINE_STATS" with
-  | Some _ -> true
-  | None -> false
+let debug_pipeline_stats = false
 
 let stats_cta_cond = "(blockIdx.x % 16 == 0 && blockIdx.y % 16 == 0)"
 
@@ -108,6 +105,7 @@ and emit_builtin = function
     "([](){ uint32_t id; \
      asm volatile(\"mov.u32 %0, %%laneid;\" : \"=r\"(id)); \
      return id; }())"
+  | KParam name -> name
 
 
 and emit_addr_conv = function
@@ -173,6 +171,7 @@ let emit_barrier (k : tirix) = function
                 :: "r"(_mb), "r"(%s) : "memory");
         }
       |} mbar.var_name (emit_expr bytes)
+
     else
       let scope = "cta" in
       Printf.sprintf {|
@@ -347,7 +346,8 @@ let emit_copy (k: tirix) (c : copy) : string =
           in
           let epi_done_signal =
             "  if ((threadIdx.x % 32) == 0) {\n\
-            \    asm volatile(\"mbarrier.arrive.shared.b64 _, [%0];\" :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, epilogue_done_mbar) + (tile % 2) * sizeof(uint64_t))) : \"memory\");\n\
+            \    uint32_t _mb = mapa_to_cta0((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, epilogue_done_mbar) + (tile % 2) * sizeof(uint64_t)));\n\
+            \    asm volatile(\"mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%0];\" :: \"r\"(_mb) : \"memory\");\n\
             \  }"
           in
           (* C is passed as a grid_constant CUtensorMap param, named like
@@ -396,7 +396,9 @@ let emit_copy (k: tirix) (c : copy) : string =
             "    \"mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 p, [%0], %1, 0x989680;\\n\\t\"";
             "    \"@!p bra MMA_DONE_WAIT;\\n\\t\"";
             "    \"}\"";
-            "    :: \"r\"(_mbar), \"r\"(0u) : \"memory\");";
+            (* Phase of this TMEM slot's mma_done barrier: slot tile%2 is
+               reused every 2 tiles, so the phase is (tile/2) mod 2. *)
+            "    :: \"r\"(_mbar), \"r\"((uint32_t)(((tile / 2) % 2))) : \"memory\");";
             (if debug_pipeline_stats then "  const long long _e1 = clock64();" else "");
             "  asm volatile(\"tcgen05.fence::after_thread_sync;\" ::: \"memory\");";
             Printf.sprintf "  #pragma unroll\n  for (int _c = 0; _c < %d; _c++) {" n_chunks;
@@ -933,7 +935,7 @@ let emit_mbar_init_loop (k : tirix) : string =
     let done_init =
       if Poly.(k.family = Kernel_desc.Blackwell) then
         "    for(int i=0; i<2; i++) { asm volatile(\"mbarrier.init.shared.b64 [%0], 1;\" :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, mma_done_mbar) + i * sizeof(uint64_t))) : \"memory\"); }\n\
-        \    for(int i=0; i<2; i++) { asm volatile(\"mbarrier.init.shared.b64 [%0], 4;\" :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, epilogue_done_mbar) + i * sizeof(uint64_t))) : \"memory\"); }\n"
+        \    for(int i=0; i<2; i++) { asm volatile(\"mbarrier.init.shared.b64 [%0], 8;\" :: \"r\"((uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, epilogue_done_mbar) + i * sizeof(uint64_t))) : \"memory\"); }\n"
       else "" in
     (* 2-CTA pair: every CTA's expect_tx arrives (like its TMA completions)
        are routed to the leader CTA's full_mbar, so the arrival count is the
@@ -1046,17 +1048,42 @@ let emit_kernel_func (k : tirix) : string =
   let epi_stores = List.concat_map split ~f:(fun (_, _, st) -> st) in
   let has_epi_warps =
     List.exists k.cluster.Cluster.warp_roles ~f:(fun (_, r) -> Poly.(r = Cluster.Epilogue)) in
+  (* The persistent tile schedule (runtime stop bound and the
+     pair-tile < total guard) lives on the consumer's tile loop built by
+     Ast_to_tirix; find it so the epilogue iterates the exact same
+     schedule. Falls back to the old fixed 2-iteration loop. *)
+  let rec find_tile_schedule (stmts : stmt list) : (int32 expr * bool expr option) option =
+    List.find_map stmts ~f:(function
+      | SWarpGroup (_, body) -> find_tile_schedule body
+      | SFor { var; stop; body = [ SIf (cond, _, []) ]; _ }
+        when String.equal var.var_name "tile" -> Some (stop, Some cond)
+      | SFor { var; stop; _ } when String.equal var.var_name "tile" ->
+        Some (stop, None)
+      | SSeq ss -> find_tile_schedule ss
+      | _ -> None)
+  in
+  let tile_schedule =
+    if is_bw then find_tile_schedule k.body else None in
   let tile_var = { Tirix.var_name = "tile"; var_id = 999; var_type = Tirix.Scalar Tirix.S32; var_mutable = true } in
   let epi_stores =
     if is_bw && not (List.is_empty epi_stores) then
+      let stop, guard =
+        match tile_schedule with
+        | Some (stop, guard) -> (stop, guard)
+        | None -> (Tirix.Const (Tirix.S32, 2l), None)
+      in
+      let body = match guard with
+        | Some cond -> [ Tirix.SIf (cond, epi_stores, []) ]
+        | None -> epi_stores
+      in
       [ Tirix.SFor {
         var = tile_var;
         start = Tirix.Const (Tirix.S32, 0l);
-        stop = Tirix.Const (Tirix.S32, 2l);
+        stop;
         step = Tirix.Const (Tirix.S32, 1l);
         dir = Tirix.Upto;
         unroll = false;
-        body = epi_stores;
+        body;
       } ]
     else epi_stores in
   let need_epilogue = is_bw && (has_epi_warps || not (List.is_empty epi_stores)) in
@@ -1085,7 +1112,19 @@ let emit_kernel_func (k : tirix) : string =
         | [Tirix.SFor { var; start; stop; step; dir = _dir; unroll = _unroll; body = loop_body }]
           when String.equal var.var_name "tile" ->
           let ind = indent 2 in
-          let loop_s = emit_stmts k ~depth:3 ?stage_depth:sd loop_body in
+          (* The persistent tile loop guards its body with
+             pair_tile_idx < total (built by Ast_to_tirix). The back-
+             pressure wait and the mma_done commit MUST live inside that
+             guard: for a skipped tile the epilogue never runs, so waiting
+             on it would hang and an empty commit would desync the
+             mma_done phase for the next use of the slot. *)
+          let guard, inner_body =
+            match loop_body with
+            | [ Tirix.SIf (c, inner, []) ] -> (Some c, inner)
+            | inner -> (None, inner)
+          in
+          let loop_depth = if Option.is_some guard then 4 else 3 in
+          let inner_s = emit_stmts k ~depth:loop_depth ?stage_depth:sd inner_body in
           (* Wait for the previous epilogue that used this same TMEM slot.
              For tile 0 and 1 the slot is fresh (no prior epilogue), so skip.
              For tile t >= 2 we wait on epilogue_done_mbar[t % 2] at
@@ -1094,15 +1133,25 @@ let emit_kernel_func (k : tirix) : string =
             Printf.sprintf
               "    if (%s >= 2) {\n\
               \      const uint32_t _em = (uint32_t)__cvta_generic_to_shared(__smem_base + offsetof(SharedStorage, epilogue_done_mbar) + (%s %% 2) * sizeof(uint64_t));\n\
-              \      asm volatile(\"{\\n\\t\" \".reg .pred p;\\n\\t\" \"LOOP_EPI:\\n\\t\" \"mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 p, [%%0], %%1, 0x989680;\\n\\t\" \"@!p bra LOOP_EPI;\\n\\t\" \"}\" :: \"r\"(_em), \"r\"((uint32_t)(((%s / 2) + 1) %% 2)) : \"memory\");\n\
+              \      asm volatile(\"{\\n\\t\" \".reg .pred p;\\n\\t\" \"LOOP_EPI:\\n\\t\" \"mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 p, [%%0], %%1, 0x989680;\\n\\t\" \"@!p bra LOOP_EPI;\\n\\t\" \"}\" :: \"r\"(_em), \"r\"((uint32_t)(((%s / 2) + 1) %% 2)) : \"memory\");\n\
               \    }\n"
               var.var_name var.var_name var.var_name
           in
-          Printf.sprintf "%sfor (%s %s = %s; %s < %s; %s += %s) {\n%s%s%s\n%s%s\n%s}"
+          let tile_body =
+            match guard with
+            | Some c ->
+              Printf.sprintf "  if (%s) {\n%s%s%s\n%s  }"
+                (emit_expr c) "    _mma_acc = 0u;\n" wait_epi inner_s
+                (emit_mma_done_signal ())
+            | None ->
+              Printf.sprintf "%s%s%s\n%s"
+                wait_epi "    _mma_acc = 0u;" inner_s (emit_mma_done_signal ())
+          in
+          Printf.sprintf "%sfor (%s %s = %s; %s < %s; %s += %s) {\n%s\n%s}"
             ind
             (emit_packed_scalar var.var_type) var.var_name (emit_expr start)
             var.var_name (emit_expr stop) var.var_name (emit_expr step)
-            wait_epi "    _mma_acc = 0u;" loop_s ind (emit_mma_done_signal ()) ind
+            tile_body ind
         | _ ->
           body_s ^ "\n" ^ emit_mma_done_signal ()
       else body_s in
@@ -1134,15 +1183,29 @@ let emit_kernel_func (k : tirix) : string =
   let mbar_init_s = emit_mbar_init_loop k in
   let tmem_dealloc_s =
     if Poly.(k.family = Kernel_desc.Blackwell) && not (has_tmem_alloc k.body) then
+      (* 2-CTA teardown. tcgen05.alloc/dealloc.cta_group::2 are collective:
+         one warp from each CTA of the pair must execute them together, and a
+         CTA must not free (or exit) while its peer still has in-flight
+         cross-CTA traffic — the epilogue's mapa'd epilogue_done arrives, the
+         multicast tcgen05.commit, and the peer's own dealloc. Without a pair
+         barrier here one CTA can reach dealloc/exit first, which faults with
+         Xid 13 "CTA Not Present" / unspecified launch failure. Sync the pair
+         before the collective dealloc and again before exit. *)
+      let cluster_exit =
+        if Cluster.is_2sm k.cluster then
+          "  asm volatile(\"barrier.cluster.arrive.release.aligned;\" ::: \"memory\");\n\
+          \  asm volatile(\"barrier.cluster.wait.acquire.aligned;\" ::: \"memory\");\n"
+        else "" in
       Printf.sprintf
-        "  __syncthreads();\n\
+        "%s  __syncthreads();\n\
         \  if (warp_id == 0) {\n\
         \    asm volatile(\"tcgen05.dealloc.cta_group::2.sync.aligned.b32 %%0, %d;\"\n\
         \      :: \"r\"(smem.tmem_addr[0]) : \"memory\");\n\
         \    asm volatile(\"tcgen05.dealloc.cta_group::2.sync.aligned.b32 %%0, %d;\"\n\
         \      :: \"r\"(smem.tmem_addr[1]) : \"memory\");\n\
-        \  }\n"
-        k.bn k.bn
+        \  }\n\
+        %s"
+        cluster_exit k.bn k.bn cluster_exit
     else "" in
   Printf.sprintf
     "extern \"C\" __global__ %s__launch_bounds__(%d)\nvoid %s(\n  %s\n) {\n\
@@ -1307,7 +1370,7 @@ let emit (k : tirix) : Backend_cute.output =
   let host_launcher  = emit_host_launcher k in
   let kernel_source = String.concat ~sep:"\n\n" [ includes; helpers; shared_storage; kernel_func ] in
   let full_source = String.concat ~sep:"\n\n" [ kernel_source; host_launcher ] in
-  Stdlib.Printf.printf "=== Generated kernel: %s ===\n%s\n=== End kernel ===\n%!" k.name full_source;
+  (*Stdlib.Printf.printf "=== Generated kernel: %s ===\n%s\n=== End kernel ===\n%!" k.name full_source;*)
   { Backend_cute.filename = k.name ^ ".cuh"
   ; includes
   ; helpers

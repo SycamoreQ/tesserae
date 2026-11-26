@@ -34,6 +34,10 @@ CAMLprim value caml_launch_kernel_cluster(
     value cx, value cy, value cz,
     value args_bigarray);
 
+CAMLprim value caml_occupancy_max_active_clusters(
+    value fn_val, value bx, value by, value bz, value smem_val,
+    value cx, value cy, value cz);
+
 CAMLprim value caml_cuinit(value unit) {
   CAMLparam1(unit);
   CU_CHECK(cuInit(0));
@@ -307,6 +311,70 @@ CAMLprim value caml_launch_kernel_cluster(
   free(params);
   CU_CHECK(rc);
   CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_occupancy_max_active_clusters(
+    value fn_val, value bx, value by, value bz, value smem_val,
+    value cx, value cy, value cz) {
+  CAMLparam5(fn_val, bx, by, bz, smem_val);
+  CAMLxparam3(cx, cy, cz);
+
+  CUfunction fn = (CUfunction) Nativeint_val(fn_val);
+  int smem = Int_val(smem_val);
+
+  /* The occupancy query honors the function's dynamic-smem limit, so opt into
+     extended shared memory exactly like the launch path does. */
+  CUresult attr_rc = cuFuncSetAttribute(fn,
+    CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem);
+  if (attr_rc != CUDA_SUCCESS) {
+    const char* msg;
+    cuGetErrorString(attr_rc, &msg);
+    caml_failwith(msg ? msg : "cuFuncSetAttribute failed");
+  }
+
+  CUlaunchConfig config;
+  memset(&config, 0, sizeof(config));
+  /* Large grid so the answer is bounded by device residency rather than the
+     grid; keep it a multiple of the cluster X extent. */
+  config.gridDimX = (unsigned int)(1024 * Int_val(cx));
+  config.gridDimY = 1;
+  config.gridDimZ = 1;
+  config.blockDimX = Int_val(bx);
+  config.blockDimY = Int_val(by);
+  config.blockDimZ = Int_val(bz);
+  config.sharedMemBytes = smem;
+  config.hStream = NULL;
+
+  CUlaunchAttribute attrs[2];
+  int nattrs = 0;
+
+  attrs[nattrs].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
+  attrs[nattrs].value.clusterDim.x = Int_val(cx);
+  attrs[nattrs].value.clusterDim.y = Int_val(cy);
+  attrs[nattrs].value.clusterDim.z = Int_val(cz);
+  nattrs++;
+
+  /* Mirror the real launch so the residency matches. */
+  attrs[nattrs].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_SCHEDULING_POLICY_PREFERENCE;
+  attrs[nattrs].value.clusterSchedulingPolicyPreference =
+    CU_CLUSTER_SCHEDULING_POLICY_SPREAD;
+  nattrs++;
+
+  config.attrs = attrs;
+  config.numAttrs = nattrs;
+
+  int numClusters = 0;
+  CUresult rc = cuOccupancyMaxActiveClusters(&numClusters, fn, &config);
+  CU_CHECK(rc);
+  CAMLreturn(Val_int(numClusters));
+}
+
+/* bytecode stub for caml_occupancy_max_active_clusters (8 args) */
+CAMLprim value caml_occupancy_max_active_clusters_bytecode(value* argv, int argc) {
+  (void) argc;
+  return caml_occupancy_max_active_clusters(
+    argv[0], argv[1], argv[2], argv[3],
+    argv[4], argv[5], argv[6], argv[7]);
 }
 
 CAMLprim value caml_device_synchronize(value unit) {

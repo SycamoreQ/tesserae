@@ -16,6 +16,10 @@ type ctx = {
   elem_bytes : int;
   roles : (int * Tesserae_pipeline.Cluster.warp_role) list;
   cta_count : int;
+  (* Whether the kernel takes scalar M / N parameters (needed by the
+     persistent pair-tile decomposition). *)
+  has_m : bool;
+  has_n : bool;
   multicast : bool;
 }
 

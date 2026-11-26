@@ -39,6 +39,13 @@ external caml_launch_kernel_cluster : nativeint
   -> unit
   = "caml_launch_kernel_cluster_bytecode" "caml_launch_kernel_cluster"
 
+external caml_occupancy_max_active_clusters : nativeint
+  -> int -> int -> int
+  -> int
+  -> int -> int -> int
+  -> int
+  = "caml_occupancy_max_active_clusters_bytecode" "caml_occupancy_max_active_clusters"
+
 external caml_device_synchronize  : unit -> unit
   = "caml_device_synchronize"
 
@@ -106,6 +113,14 @@ let launch (f : func)
 
 let synchronize () : unit =
   caml_device_synchronize ()
+
+let max_active_clusters (f : func)
+    ~(block : int * int * int)
+    ~(smem : int)
+    ~(cluster : int * int * int) : int =
+  let bx, by, bz = block in
+  let cx, cy, cz = cluster in
+  caml_occupancy_max_active_clusters !(f.handle) bx by bz smem cx cy cz
 
 let device_info () : string =
   caml_device_info ()

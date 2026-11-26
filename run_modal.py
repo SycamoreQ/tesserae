@@ -105,14 +105,41 @@ def run_tesserae_ncu(args: str = ""):
         print("ncu not found in image:", r.stderr[-2000:])
         return
     if not args.strip():
-        args = "-m 4096 -n 4096 -k 4096 -stages 3 -warmup 1 -iters 1 -repeats 1 -l2 128"
+        args = ("-m 4096 -n 4096 -k 4224 -stages 3 -bn 256 -pairs 64 "
+                "-warmup 1 -iters 1 -repeats 1 -l2 128")
+    # Discover the Blackwell tcgen05 tensor-pipe counter name (differs from the
+    # Hopper hmma metric). Cheap, no profiling; printed so we can add it next.
+    r = _sh(
+        'NCU=$(command -v ncu || ls /usr/local/cuda/bin/ncu '
+        '/opt/nvidia/nsight-compute*/ncu 2>/dev/null | head -1); '
+        '"$NCU" --query-metrics 2>/dev/null '
+        '| grep -iE "pipe_tensor|tcgen|tensor_op" | head -40',
+        capture_output=True, text=True)
+    print("tensor-pipe metric candidates:\n" + (r.stdout or "(none)")[:4000])
     metrics = ",".join([
         "gpu__time_duration.sum",
         "launch__registers_per_thread",
         "launch__waves_per_multiprocessor",
+        "launch__occupancy_limit_shared_mem",
+        "launch__occupancy_limit_registers",
+        "launch__occupancy_limit_warps",
+        "launch__occupancy_limit_blocks",
         "sm__throughput.avg.pct_of_peak_sustained_elapsed",
         "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+        "lts__throughput.avg.pct_of_peak_sustained_elapsed",
+        "l1tex__throughput.avg.pct_of_peak_sustained_elapsed",
         "sm__warps_active.avg.pct_of_peak_sustained_active",
+        "smsp__issue_active.avg.pct_of_peak_sustained_active",
+        "dram__bytes.sum",
+        "lts__t_bytes.sum",
+        "smsp__warp_issue_stalled_barrier_per_warp_active.pct",
+        "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+        "smsp__warp_issue_stalled_short_scoreboard_per_warp_active.pct",
+        "smsp__warp_issue_stalled_wait_per_warp_active.pct",
+        "smsp__warp_issue_stalled_not_selected_per_warp_active.pct",
+        "smsp__warp_issue_stalled_math_pipe_throttle_per_warp_active.pct",
+        "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct",
+        "smsp__warp_issue_stalled_lg_throttle_per_warp_active.pct",
     ])
     exe = "_build/default/lib/runtime/bench/bench_gemm.exe"
     print(f"Running ncu on {exe} {args}")
